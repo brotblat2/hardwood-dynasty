@@ -24,6 +24,9 @@ export function makeHoops() {
     color: 0xb3cacc, opacity: 0.23, transparent: true, depthWrite: false, roughness: 0.25, metalness: 0.03,
   });
   const rimMaterial = new THREE.MeshStandardMaterial({ color: 0xe55726, metalness: 0.27, roughness: 0.35 });
+  const buzzerMat = new THREE.MeshBasicMaterial({ color: 0xff2b25 });
+  const buzzerGroup = new THREE.Group();
+  buzzerGroup.visible = false;
 
   const clockCanvas = document.createElement('canvas');
   clockCanvas.width = 160;
@@ -75,6 +78,9 @@ export function makeHoops() {
 
     for (const y of [h - 0.047, h + 0.97]) box(result, white, [0.062, 0.028, 1.82], boardX, y, 0);
     for (const z of [-0.9, 0.9]) box(result, white, [0.062, 1.035, 0.028], boardX, h + 0.46, z);
+    // Backboard buzzer LED perimeter strips
+    for (const y of [h - 0.062, h + 0.988]) box(buzzerGroup, buzzerMat, [0.068, 0.018, 1.86], boardX, y, 0);
+    for (const z of [-0.916, 0.916]) box(buzzerGroup, buzzerMat, [0.068, 1.06, 0.018], boardX, h + 0.46, z);
     for (const y of [h + 0.035, h + 0.48]) box(result, white, [0.067, 0.025, 0.58], boardX, y, 0);
     for (const z of [-0.278, 0.278]) box(result, white, [0.067, 0.457, 0.025], boardX, h + 0.258, z);
     box(result, rimMaterial, [0.185, 0.037, 0.15], rimX + sign * 0.31, h - 0.017, 0);
@@ -114,6 +120,8 @@ export function makeHoops() {
     result.add(new THREE.LineSegments(net, netMat));
   }
   mergeStaticMeshes(result, true);
+  mergeStaticMeshes(buzzerGroup, true);
+  result.add(buzzerGroup);
   return {
     group: result,
     setOutdoor(blacktop: boolean) {
@@ -122,8 +130,12 @@ export function makeHoops() {
     },
     animate(state: GameState) {
       const seconds = Math.max(0, Math.ceil(state.shotClock));
-      const buzzer = state.shotClock <= 0 || (state.config.mode === 'regulation' && state.clock <= 0);
+      const gameBuzzer = state.config.mode === 'regulation' && state.clock <= 0;
+      const shotBuzzer = state.shotClock <= 0;
+      const buzzer = gameBuzzer || shotBuzzer;
       drawShotClock(seconds, buzzer);
+      buzzerGroup.visible = buzzer && state.config.mode !== 'practice';
+      if (buzzerGroup.visible) buzzerMat.color.setHex(gameBuzzer ? 0xff2a2a : 0xffb030);
       for (const net of nets) {
         const movement = netResponse(state, net.side);
         if (!movement.drop && !movement.flare && !movement.x && !movement.z && !net.needsReset) continue;
@@ -228,12 +240,48 @@ function makeCrowd(stands: THREE.Group) {
   stands.add(heads, bodies);
   const dummy = new THREE.Object3D();
 
+  const homeShirtFlags = spectators.map(() => random() < 0.46);
+  const baseTops = spectators.map(s => s.top.clone());
   for (let i = 0; i < spectators.length; i++) {
     heads.setColorAt(i, spectators[i].skin);
     bodies.setColorAt(i, spectators[i].top);
   }
 
-  function animate(time: number, cheer: number) {
+  // Dynamic crowd camera flashbulbs triggered during highlights
+  const flashGeo = new THREE.PlaneGeometry(0.18, 0.18);
+  const flashes: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; phase: number }[] = [];
+  for (let i = 0; i < 18; i++) {
+    const s = spectators[Math.floor((i * 73) % spectators.length)];
+    if (!s) continue;
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(flashGeo, mat);
+    mesh.position.set(s.x, s.y + 0.45, s.z);
+    mesh.rotation.y = s.rotation;
+    stands.add(mesh);
+    flashes.push({ mesh, mat, phase: i * 1.93 });
+  }
+
+  function setTeamColors(primaryHex?: string, accentHex?: string) {
+    const pColor = primaryHex ? new THREE.Color(primaryHex) : undefined;
+    const aColor = accentHex ? new THREE.Color(accentHex) : undefined;
+    for (let i = 0; i < spectators.length; i++) {
+      if (pColor && homeShirtFlags[i]) {
+        bodies.setColorAt(i, i % 5 === 0 && aColor ? aColor : pColor);
+      } else {
+        bodies.setColorAt(i, baseTops[i]);
+      }
+    }
+    if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+  }
+
+  function animate(time: number, cheer: number, flashIntensity = 0) {
     for (let i = 0; i < spectators.length; i++) {
       const spectator = spectators[i];
       const swing = Math.sin(time * 2.6 + spectator.sway);
@@ -250,9 +298,94 @@ function makeCrowd(stands: THREE.Group) {
     }
     heads.instanceMatrix.needsUpdate = true;
     bodies.instanceMatrix.needsUpdate = true;
+    for (const f of flashes) {
+      const sparkle = flashIntensity > 0.05 && Math.sin(time * 28 + f.phase) > 0.45 ? flashIntensity * 0.85 : 0;
+      f.mesh.visible = sparkle > 0.02;
+      f.mat.opacity = sparkle;
+    }
   }
-  animate(0, 0);
-  return animate;
+  animate(0, 0, 0);
+  return { animate, setTeamColors };
+}
+
+function makeJumbotron(indoor: THREE.Group) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  const tex = canvasTexture(canvas, 2);
+  let lastKey = '';
+
+  const housing = new THREE.Group();
+  housing.position.set(0, 8.4, 0);
+  const darkMetal = new THREE.MeshStandardMaterial({ color: 0x161a1d, metalness: 0.72, roughness: 0.4 });
+  box(housing, darkMetal, [3.35, 1.65, 3.35], 0, 0, 0);
+  box(housing, darkMetal, [0.42, 4.0, 0.42], 0, 2.7, 0);
+  const screenMat = new THREE.MeshBasicMaterial({ map: tex });
+  const screenGeo = new THREE.PlaneGeometry(3.15, 1.48);
+  const faces: [number, number, number, number][] = [
+    [0, 0, 1.685, 0],
+    [0, 0, -1.685, Math.PI],
+    [1.685, 0, 0, Math.PI / 2],
+    [-1.685, 0, 0, -Math.PI / 2],
+  ];
+  for (const [x, y, z, ry] of faces) {
+    const scr = new THREE.Mesh(screenGeo, screenMat);
+    scr.position.set(x, y, z);
+    scr.rotation.y = ry;
+    housing.add(scr);
+  }
+  indoor.add(housing);
+
+  function update(state?: GameState) {
+    const home = state?.teams[0];
+    const away = state?.teams[1];
+    const s0 = state?.score[0] ?? 0;
+    const s1 = state?.score[1] ?? 0;
+    const clockSec = Math.max(0, Math.ceil(state?.clock ?? 300));
+    const period = state?.period ?? 1;
+    const key = `${home?.id ?? ''}:${away?.id ?? ''}:${s0}:${s1}:${period}:${clockSec}`;
+    if (key === lastKey) return;
+    lastKey = key;
+
+    ctx.fillStyle = '#0d1115';
+    ctx.fillRect(0, 0, 512, 256);
+    ctx.fillStyle = home?.color ?? '#c8102e';
+    ctx.fillRect(16, 20, 168, 216);
+    ctx.fillStyle = away?.color ?? '#1d428a';
+    ctx.fillRect(328, 20, 168, 216);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(16, 20, 168, 216);
+    ctx.fillRect(328, 20, 168, 216);
+    ctx.strokeStyle = '#d4af37';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(16, 20, 480, 216);
+
+    ctx.fillStyle = '#f8f5ec';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '900 34px sans-serif';
+    ctx.fillText(home?.abbreviation ?? 'HOME', 100, 68);
+    ctx.fillText(away?.abbreviation ?? 'AWAY', 412, 68);
+    ctx.font = '900 88px monospace';
+    ctx.fillText(String(s0), 100, 158);
+    ctx.fillText(String(s1), 412, 158);
+
+    ctx.fillStyle = '#f8d26a';
+    ctx.font = '800 24px sans-serif';
+    ctx.fillText(state?.config.mode === 'blacktop' ? 'BLACKTOP' : `Q${period}`, 256, 74);
+    const min = Math.floor(clockSec / 60);
+    const sec = String(clockSec % 60).padStart(2, '0');
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 46px monospace';
+    ctx.fillText(`${min}:${sec}`, 256, 148);
+    ctx.fillStyle = '#9aa8b4';
+    ctx.font = '700 15px sans-serif';
+    ctx.fillText('HARDWOOD ARENA', 256, 206);
+    tex.needsUpdate = true;
+  }
+  update(undefined);
+  return { update };
 }
 
 export function makeArena() {
@@ -297,6 +430,31 @@ export function makeArena() {
     const table = box(indoor, stage, [3.6, 0.65, 0.62], x, 0.45, 9.76);
     table.castShadow = true;
   }
+  // Overhead rafters, banners & subtle additive spotlight cones
+  for (const x of [-12, -4, 4, 12]) {
+    box(indoor, beam, [0.16, 0.24, 24], x, 10.6, -2);
+  }
+  const bannerMat = new THREE.MeshStandardMaterial({ color: 0x20352d, roughness: 0.85 });
+  const goldTrim = new THREE.MeshBasicMaterial({ color: 0xd9b86c });
+  for (const x of [-9.5, -5.5, 5.5, 9.5]) {
+    box(indoor, bannerMat, [1.25, 2.0, 0.04], x, 9.1, -15.6);
+    box(indoor, goldTrim, [1.25, 0.14, 0.05], x, 8.12, -15.6);
+  }
+  const coneGeo = new THREE.CylinderGeometry(0.32, 3.3, 8.8, 16, 1, true);
+  const coneMat = new THREE.MeshBasicMaterial({
+    color: 0xfff2db,
+    transparent: true,
+    opacity: 0.028,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  for (const [cx, cz] of [[-7.2, -1.8], [7.2, -1.8], [-2.8, 1.2], [2.8, 1.2]]) {
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.set(cx, 5.2, cz);
+    indoor.add(cone);
+  }
+  const jumbotron = makeJumbotron(indoor);
   const crowd = makeCrowd(indoor);
 
   box(outdoor, concrete, [42, 0.15, 35], 0, -0.09, 0);
@@ -356,9 +514,25 @@ export function makeArena() {
       led.needsUpdate = true;
       ledTexture.dispose();
       ledTexture = nextTexture;
+      crowd.setTeamColors(homeTeam?.color, homeTeam?.accent);
     },
-    animate(time: number, cheer: number) {
-      if (indoor.visible) crowd(time, cheer);
+    animate(time: number, cheer: number, state?: GameState) {
+      if (indoor.visible) {
+        jumbotron.update(state);
+        let flash = 0;
+        if (state) {
+          const ev = state.events.findLast(e =>
+            e.type === 'block' || (e.type === 'score' && (e.points === 3 || state.events.slice(-6).some(s => s.type === 'shot' && s.detail?.startsWith('Dunk')))),
+          );
+          if (ev && state.tick - ev.tick >= 0 && state.tick - ev.tick < 26) {
+            flash = Math.max(flash, 1 - (state.tick - ev.tick) / 26);
+          }
+          if (state.callout?.text === 'ANKLE BREAKER!' && state.tick - state.callout.tick >= 0 && state.tick - state.callout.tick < 26) {
+            flash = Math.max(flash, 1 - (state.tick - state.callout.tick) / 26);
+          }
+        }
+        crowd.animate(time, cheer, flash);
+      }
     },
   };
 }

@@ -25,13 +25,14 @@ export function chooseShotStyle(
   dunkReachHeight: number,
   tick: number,
 ): ShotType {
-  const inside = range < 2.3;
-  const canDunk = inside && dunkReachHeight >= COURT.rimHeight + 0.07;
+  const driving = gather.approach >= 2.3 && range < 3.4;
+  const inside = range < 2.45 || driving;
+  const canDunk = (range < (gather.sprint ? 2.9 : 2.35) || driving) && dunkReachHeight >= COURT.rimHeight + 0.07;
   if (gather.style === 'dunk') return canDunk ? 'dunk' : inside ? 'layup' : 'jump';
-  if (gather.style === 'euro') return range < 3.6 ? 'euro' : 'floater';
+  if (gather.style === 'euro') return range < 3.8 ? 'euro' : 'floater';
   if (gather.style === 'layup' && !inside) return 'floater';
   if (gather.style) return gather.style;
-  if (inside) return canDunk && gather.sprint ? 'dunk' : 'layup';
+  if (inside) return canDunk && (gather.sprint || driving) ? 'dunk' : 'layup';
   if (dribble?.lastMoveType === 'stepBack' && tick - dribble.lastMoveTick <= 36 && range >= 2.6) return 'stepBack';
   if (gather.backward) return 'fadeaway';
   if (range >= 4.4) return 'jump';
@@ -102,11 +103,12 @@ export function computeGreenWindow(
   contact: number,
   catchAndShoot: boolean,
   rhythm: boolean,
+  hotStreak = false,
 ): { greenWindow: number; isGreen: boolean } {
   const greenWindow = clamp(
-    0.040 + (rating - 60) * 0.00072 - pressure * 0.032 + (catchAndShoot ? 0.011 : 0) + (rhythm ? 0.012 : 0),
+    0.040 + (rating - 60) * 0.00072 - pressure * 0.032 + (catchAndShoot ? 0.011 : 0) + (rhythm ? 0.012 : 0) + (hotStreak ? 0.008 : 0),
     0.015,
-    0.078,
+    0.084,
   );
   const isGreen = Math.abs(error) <= greenWindow && pressure < 0.38 && contact < 0.30;
   return { greenWindow, isGreen };

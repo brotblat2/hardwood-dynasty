@@ -107,8 +107,8 @@ test('simultaneous touch movement, sprint and shot have independent lifetimes', 
 test('pass presses preserve their aim and type even when movement changes before the tick', () => {
   const input = createInputState();
   input.keyDown('KeyA', bindings);
-  input.keyDown('KeyK', bindings);
-  input.keyUp('KeyK');
+  input.keyDown('KeyU', bindings);
+  input.keyUp('KeyU');
   input.keyUp('KeyA');
   input.touch.move({ x: 0, z: 1 });
   input.touch.press(1, 'lobPass');
@@ -216,9 +216,9 @@ test('smart player switching aligns directionally and avoids two-player ping-pon
 
 test('controls map intenseD, capture directional dribbleDir, and derive euro step', () => {
   const input = createInputState();
-  input.keyDown('KeyZ', bindings);
+  input.keyDown('KeyL', bindings);
   assert.equal(input.read(bindings).intenseD, true);
-  input.keyUp('KeyZ');
+  input.keyUp('KeyL');
   assert.equal(input.read(bindings).intenseD, false);
 
   const buttons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));
@@ -232,7 +232,7 @@ test('controls map intenseD, capture directional dribbleDir, and derive euro ste
 
   input.clear();
   input.keyDown('KeyD', bindings);
-  input.keyDown('KeyF', bindings);
+  input.keyDown('KeyK', bindings);
   const keyDribble = input.read(bindings);
   assert.equal(keyDribble.dribble, true);
   assert.ok((keyDribble.dribbleDir?.x ?? 0) > 0.5);

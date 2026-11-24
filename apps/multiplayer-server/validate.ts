@@ -27,7 +27,8 @@ export function roomConfig(v: unknown): v is RoomConfig {
     if (key === 'difficulty' && !['Rookie','Pro','All-Star','Superstar','Hall of Fame','Legendary'].includes(String(val))) return false;
     if (key === 'mode' && !['regulation','blacktop','practice'].includes(String(val))) return false;
     if (['halfCourt','makeItTakeIt'].includes(key) && typeof val !== 'boolean') return false;
-    if (!range && !['mode','difficulty','halfCourt','makeItTakeIt'].includes(key)) return false;
+    if (key === 'kits' && (!Array.isArray(val) || val.length !== 2 || !val.every(k => ['home','away','statement','city'].includes(String(k))))) return false;
+    if (!range && !['mode','difficulty','halfCourt','makeItTakeIt','kits'].includes(key)) return false;
   }
   return v.teams.every(t => t.roster.length >= Number(g.playersPerTeam ?? 5));
 }
@@ -41,7 +42,7 @@ export function control(v: unknown): v is Control {
     if (key === 'defenseScheme' && ['man','zone23','switch','press'].includes(String(value))) continue;
     if (key === 'targetId' && id(value)) continue;
     if (key === 'dribbleDir' && record(value) && num(value.x, -1, 1) && num(value.z, -1, 1)) continue;
-    if (['sprint','shoot','pass','contest','steal','screen','dribble','pumpFake','callScreen','callPass','intenseD'].includes(key) && typeof value === 'boolean') continue;
+    if (['sprint','shoot','pass','contest','steal','screen','dribble','pumpFake','callScreen','callPass','intenseD','postUp'].includes(key) && typeof value === 'boolean') continue;
     return false;
   }
   return true;

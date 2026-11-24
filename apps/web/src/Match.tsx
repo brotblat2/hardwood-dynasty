@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { Control, DefenseScheme, GameConfig, GameState, OffensePlay, RoomInfo, Side, Team } from '../../../packages/contracts/index.ts';
 import { TICK_RATE, COURT, attackSign } from '../../../packages/contracts/index.ts';
 import { createEngine, IDEAL_RELEASE, selectPassTarget } from '../../../packages/game-engine/index.ts';
+import { computeGreenWindow } from '../../../packages/game-engine/shooting.ts';
 import { createCoach } from '../../../packages/basketball-ai/index.ts';
 import { createRenderer } from '../../../packages/rendering/index.ts';
 import {
@@ -73,6 +74,7 @@ function cleanMultiplayerInput(input: Control): Control {
   if (input.screen) out.screen = true;
   if (input.dribble) out.dribble = true;
   if (input.intenseD) out.intenseD = true;
+  if (input.postUp) out.postUp = true;
   if (input.dribbleDir) {
     out.dribbleDir = { x: Math.max(-1, Math.min(1, input.dribbleDir.x)), z: Math.max(-1, Math.min(1, input.dribbleDir.z)) };
   }
@@ -124,6 +126,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const iconPassRef = useRef(false);
   const passTargetPreviewRef = useRef<string | undefined>(undefined);
   const recentSwitchRef = useRef<{ id: string; untilTick: number }>({ id: '', untilTick: -1 });
+  const lastPossessionRef = useRef<Side | null>(null);
   const prevFrameRef = useRef<PrevFrame | null>(null);
   const meterRef = useRef<HTMLDivElement>(null);
   const meterFillRef = useRef<HTMLDivElement>(null);
@@ -207,9 +210,22 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       const owner = own.find(player => player.id === state.ball.ownerId);
       const half = state.config.halfCourt ?? state.config.mode === 'blacktop';
       const moveCourt = renderer.current?.projectMove(input.move) ?? input.move;
+      if (lastPossessionRef.current !== state.possession) {
+        if (lastPossessionRef.current !== null && !setup.playerLock && state.possession !== side.current && own.length > 0) {
+          const onBall = [...own].sort((a, b) =>
+            Math.hypot(a.position.x - state.ball.position.x, a.position.z - state.ball.position.z) -
+            Math.hypot(b.position.x - state.ball.position.x, b.position.z - state.ball.position.z),
+          )[0];
+          if (onBall) selected.current = onBall.id;
+        }
+        lastPossessionRef.current = state.possession;
+      }
+      const looseOrShot = state.ball.ownerId === null;
+      const defending = !looseOrShot && state.possession !== side.current && owner?.id !== selected.current;
+      const contextSwitch = (defending || looseOrShot) && input.pass && (!input.passType || input.passType === 'chest');
       if (!own.some(player => player.id === selected.current)) selected.current = initialSelection(state, side.current, setup.playerLock);
       if (!setup.playerLock) {
-        if (switchPlayer) {
+        if (switchPlayer || contextSwitch) {
           autoFollow.current = false;
           const current = own.find(p => p.id === selected.current) ?? own[0];
           const recent = recentSwitchRef.current.untilTick > state.tick ? [recentSwitchRef.current.id] : [];
@@ -258,11 +274,27 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
           input.callScreen = true;
           input.screen = false;
         }
+        if (input.intenseD) {
+          input.postUp = true;
+          input.intenseD = false;
+        }
+        const curCharge = state.charge[owner.id] ?? 0;
+        const atk = half ? 1 : attackSign(side.current);
+        const distToRim = Math.hypot(atk * COURT.rimX - owner.position.x, -owner.position.z);
+        const ownerSpeed = Math.hypot(owner.velocity.x, owner.velocity.z);
+        const drivingRim = distToRim < 3.4 && ownerSpeed > 1.8;
+        if (!input.shoot && !input.pass && curCharge > 0 && curCharge <= 0.12 && !state.freeThrow && !drivingRim) {
+          input.pumpFake = true;
+        }
         if (input.shoot) {
-          const rim = { x: (half ? 1 : attackSign(side.current)) * COURT.rimX, z: 0 };
-          const proStickCourt = proStick ? (renderer.current?.projectMove(proStick) ?? proStick) : undefined;
-          const shotType = deriveShotType(owner, moveCourt, rim, { sprint: input.sprint, dribble: input.dribble, proStickCourt });
-          if (shotType) input.shotType = shotType;
+          const rim = { x: atk * COURT.rimX, z: 0 };
+          if (input.postUp) {
+            input.shotType = moveCourt.x * atk < -0.35 ? 'fadeaway' : 'hook';
+          } else {
+            const proStickCourt = proStick ? (renderer.current?.projectMove(proStick) ?? proStick) : undefined;
+            const shotType = deriveShotType(owner, moveCourt, rim, { sprint: input.sprint, dribble: input.dribble, proStickCourt });
+            if (shotType) input.shotType = shotType;
+          }
         }
         const aim = passAim ? (renderer.current?.projectMove(passAim) ?? passAim) : moveCourt;
         const preview = (passTarget.current && mates.some(p => p.id === passTarget.current))
@@ -282,12 +314,43 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       } else {
         iconPassRef.current = false;
         passTargetPreviewRef.current = undefined;
-        if (state.possession === side.current && input.pass) {
-          input.callPass = true;
-        }
-        if (state.possession !== side.current && state.ball.kind === 'held' && input.screen) {
-          input.intenseD = true;
-          input.screen = false;
+        if (looseOrShot) {
+          if (input.shoot) {
+            input.contest = true;
+            input.shoot = false;
+          }
+          if (input.intenseD) {
+            input.screen = true;
+            input.intenseD = false;
+          }
+          if (input.pass) {
+            input.pass = false;
+            delete input.passType;
+          }
+        } else {
+          if (state.possession === side.current && input.pass) {
+            input.callPass = true;
+          }
+          if (defending) {
+            if (input.dribble) {
+              input.steal = true;
+              input.dribble = false;
+            }
+            if (input.pass) {
+              if (input.passType === 'bounce') input.steal = true;
+              else if (input.passType === 'lob') input.contest = true;
+              input.pass = false;
+              delete input.passType;
+            }
+            if (input.shoot) {
+              input.contest = true;
+              input.shoot = false;
+            }
+            if (state.ball.kind === 'held' && input.screen) {
+              input.intenseD = true;
+              input.screen = false;
+            }
+          }
         }
       }
 
@@ -363,7 +426,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
           if (pt.visible) {
             meterEl.hidden = false;
             meterEl.style.transform = `translate(${pt.x.toFixed(1)}px, ${pt.y.toFixed(1)}px) translate(-50%, -100%)`;
-            const pct = Math.min(100, (curCharge / 1.2) * 100);
+            const pct = Math.min(100, (curCharge / 0.96) * 100);
             meterFillEl.style.width = `${pct.toFixed(1)}%`;
             const defenders = renderState.players.filter(p => p.side !== activePlayer.side);
             const closestDef = defenders.reduce<{ d: number; contesting: boolean }>((best, q) => {
@@ -376,9 +439,9 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
             const range = Math.hypot(rimX - activePlayer.position.x, -activePlayer.position.z);
             const rating = range < 3.2 ? activePlayer.profile.ratings.finishing : activePlayer.profile.ratings.shooting;
             const estPressure = Math.max(0, Math.min(1, 1 - closestDef.d / 2.2)) * (closestDef.contesting ? 0.65 : 0.25);
-            const gw = Math.max(0.018, Math.min(0.088, 0.036 + (rating - 60) * 0.0007 - estPressure * 0.025));
-            const idealPct = (IDEAL_RELEASE / 1.2) * 100;
-            const widthPct = ((gw * 2) / 1.2) * 100;
+            const { greenWindow: gw } = computeGreenWindow(rating, 0, estPressure, 0, false, false, (activePlayer.action?.hotStreak ?? 0) >= 2);
+            const idealPct = (IDEAL_RELEASE / 0.96) * 100;
+            const widthPct = ((gw * 2) / 0.96) * 100;
             if (meterGreenRef.current) {
               meterGreenRef.current.style.left = `${(idealPct - widthPct / 2).toFixed(2)}%`;
               meterGreenRef.current.style.width = `${widthPct.toFixed(2)}%`;
@@ -401,8 +464,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
               calloutEl.hidden = false;
               calloutEl.style.transform = `translate(${pt.x.toFixed(1)}px, ${pt.y.toFixed(1)}px) translate(-50%, -100%)`;
               calloutEl.dataset.tone = fb.green ? 'green' : fb.timing.includes('Slightly') || fb.timing === 'Excellent' ? 'good' : 'miss';
-              const contestText = fb.contestPct != null ? `${fb.contestPct}% ${fb.contest.toUpperCase()}` : fb.contest.toUpperCase();
-              calloutEl.textContent = `${fb.timing.toUpperCase()} · ${contestText} · ${fb.style.toUpperCase()}${fb.rhythm ? ' · RHYTHM' : ''}${fb.bank ? ' (BANK)' : ''}`;
+              calloutEl.textContent = `${fb.green ? 'GREEN' : fb.timing.toUpperCase()} · ${fb.contest.toUpperCase()}${fb.bank ? ' · BANK' : ''}`;
             } else {
               calloutEl.hidden = true;
             }
@@ -545,7 +607,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       <div className="overhead-meter" ref={meterRef} hidden>
         <span className="overhead-meter__green" ref={meterGreenRef} />
         <div className="overhead-meter__fill" ref={meterFillRef} />
-        <i className="overhead-meter__notch" style={{ left: `${(IDEAL_RELEASE / 1.2) * 100}%` }} />
+        <i className="overhead-meter__notch" style={{ left: `${(IDEAL_RELEASE / 0.96) * 100}%` }} />
       </div>
       <div className="shot-callout" ref={calloutRef} hidden />
       <div className="play-callout" ref={playCalloutRef} hidden />
@@ -573,17 +635,12 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
 
     {localPlayer && <div className="player-hud"><div className="hud-name"><i style={{ background: hud?.teams[localPlayer.side].color }} /> <strong>{localPlayer.profile.name}</strong> <small>#{localPlayer.profile.number}</small></div>
       <div className="meter stamina" aria-label="Stamina"><i style={{ width: (localPlayer.stamina <= 1 ? localPlayer.stamina * 100 : localPlayer.stamina) + '%' }} /></div>
-      <div className={'meter release' + (charge > 0 ? ' active' : '')} aria-label="Shot release"><i style={{ width: Math.min(100, charge / 1.2 * 100) + '%' }} /><b style={{ left: (IDEAL_RELEASE / 1.2 * 100) + '%' }} /></div>
-      {hud && (hud.ball.ownerId === localPlayer.id ? <div className="hud-status">
-        <div className="adrenaline-pips" aria-label="Adrenaline">
-          {[0, 1, 2].map(i => <i key={i} className={'adrenaline-pip' + (i < (localPlayer.action?.adrenaline ?? 3) ? ' active' : '')} />)}
-        </div>
-        <span className={'ball-chip' + (localPlayer.action?.ballState === 'dead' ? ' dead' : '')}>
-          {localPlayer.action?.ballState === 'dead' ? 'DEAD DRIBBLE' : localPlayer.action?.ballState === 'tripleThreat' ? 'TRIPLE THREAT' : 'LIVE'}
-        </span>
-      </div> : (localPlayer.action?.intenseD || localPlayer.action?.bodyUp) ? <div className="hud-status">
+      {hud && (hud.ball.ownerId === localPlayer.id ? ((localPlayer.action?.ballState === 'dead' || (localPlayer.action?.hotStreak ?? 0) >= 2) ? <div className="hud-status">
+        {localPlayer.action?.ballState === 'dead' && <span className="ball-chip dead">PICKUP</span>}
+        {(localPlayer.action?.hotStreak ?? 0) >= 2 && <span className="ball-chip hot">HOT {localPlayer.action?.hotStreak}x</span>}
+      </div> : null) : (localPlayer.action?.intenseD || localPlayer.action?.bodyUp) ? <div className="hud-status">
         <span className="ball-chip defense">
-          {localPlayer.action?.bodyUp === 'clamp' ? 'CLAMPED' : localPlayer.action?.bodyUp === 'ride' ? 'BODY-UP' : 'INTENSE-D'}
+          {localPlayer.action?.bodyUp === 'clamp' ? 'CLAMPED' : localPlayer.action?.bodyUp === 'ride' ? 'BODY-UP' : 'TIGHT D'}
         </span>
       </div> : null)}
       {event && event.type !== 'pass' && <p>{event.detail ?? ({ score: 'Basket', miss: 'Missed shot', rebound: 'Rebound', steal: 'Steal', block: 'Block', shot: 'Shot attempt', foul: 'Foul', turnover: 'Turnover', period: 'Period ended', assist: 'Assist', timeout: 'Timeout', substitution: 'Substitution' } as Record<string, string>)[event.type]}</p>}
@@ -593,6 +650,26 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         <span>{hud.possession === side.current ? 'OFFENSE' : 'DEFENSE'}</span>
         <strong>{hud.possession === side.current ? PLAY_LABELS[offensePlay] : SCHEME_LABELS[defenseScheme]}</strong>
       </button>
+    )}
+    {hud && !paused && !finish && !error && (
+      <div className="context-bar desktop-only" aria-label="Active controls">
+        {hud.ball.ownerId === null ? <>
+          <span><kbd>Space</kbd> Rebound</span>
+          <span><kbd>L</kbd>/<kbd>E</kbd> Box Out</span>
+          <span><kbd>J</kbd> Switch</span>
+        </> : hud.possession === side.current ? <>
+          <span><kbd>Space</kbd> Shoot / Tap Fake</span>
+          <span><kbd>J</kbd> Pass</span>
+          <span><kbd>K</kbd> Dribble</span>
+          <span><kbd>L</kbd> Post-Up</span>
+          <span><kbd>E</kbd> Screen</span>
+        </> : <>
+          <span><kbd>L</kbd> Tight D</span>
+          <span><kbd>J</kbd> Switch</span>
+          <span><kbd>Space</kbd> Block</span>
+          <span><kbd>K</kbd> Steal</span>
+        </>}
+      </div>
     )}
     <TouchControls touch={controls.touch} context={touchContext} charge={charge} visible={paused || finish || !ready ? false : undefined} />
     {showControls && <div className="control-help"><div className="panel-head"><h3>Controls</h3><button className="icon-button" onClick={() => { setShowControls(false); stage.current?.focus(); }}>×</button></div>

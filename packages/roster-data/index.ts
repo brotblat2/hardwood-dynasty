@@ -1,5 +1,6 @@
-import type { Player, Position, Ratings, Team } from '../contracts/index.ts';
+import type { JerseyPattern, Player, Position, Ratings, Team } from '../contracts/index.ts';
 import { estimateStrength } from './body.ts';
+import { SKIN_TONES, lookupNbaLikeness } from './likeness.ts';
 
 const positions: Position[] = ['PG', 'SG', 'SF', 'PF', 'C'];
 const fictionalNames = [
@@ -33,19 +34,23 @@ function generatedRatings(base: number, index: number, position: Position): Rati
   return Object.fromEntries(ratingKeys.map((key, skill) => [key, clampRating(base + strengths[position][skill] + (unit(1 + index * 17 + skill) - 0.5) * 12)])) as Ratings;
 }
 
+const demoPatterns: readonly JerseyPattern[] = ['sidePanel', 'pinstripe', 'chevron', 'hoopBand', 'sash', 'herringbone', 'classic', 'sunburst'];
+
 export function createFictionalTeam(id: string, city: string, name: string, abbreviation: string, color: string, accent: string, conference: Team['conference'], index: number): Team {
   return {
-    id, city, name, abbreviation, color, accent, conference,
+    id, city, name, abbreviation, color, accent, jerseyPattern: demoPatterns[index % demoPatterns.length], conference,
     roster: Array.from({ length: 10 }, (_, slot) => {
       const position = positions[slot % 5];
       const ordinal = index * 10 + slot;
       const overall = Math.round((slot < 5 ? 78 : 67) + unit(ordinal) * 12);
       const height = 1.82 + 0.065 * (slot % 5) + unit(ordinal + 203) * 0.075;
       const weight = Math.round(76 + (slot % 5) * 9 + unit(ordinal + 229) * 15);
+      const playerName = fictionalNames[ordinal % fictionalNames.length];
+      const likeness = lookupNbaLikeness(playerName, position, height, id + '-' + (slot + 1));
       return {
-        id: id + '-' + (slot + 1), name: fictionalNames[ordinal % fictionalNames.length], position,
+        id: id + '-' + (slot + 1), name: playerName, position,
         number: [4, 11, 23, 32, 55, 7, 13, 18, 24, 2][slot],
-        height, weight,
+        height, weight, wingspan: likeness.wingspan, appearance: likeness.appearance,
         age: 20 + Math.floor(unit(ordinal + 125) * 15),
         overall, potential: Math.min(99, overall + Math.floor(unit(ordinal + 99) * 10)),
         ratings: { ...generatedRatings(overall, ordinal, position), strength: estimateStrength(height, weight) },
@@ -67,7 +72,15 @@ export const demoTeams: Team[] = [
 ];
 const bobovNames = ['Mendy Gottlieb', 'Yossi Rubin', 'Shmuli Halberstam', 'Ari Weiss', 'Dovid Klein', 'Nussi Stein', 'Binyamin Landau', 'Zalman Gold', 'Moishy Braun', 'Yehuda Rosen'];
 export const bobovTeam = createFictionalTeam('bob', 'Brooklyn', 'Bobov Ballerz', 'BOB', '#302f3d', '#c9a86a', 'East', 10);
-bobovTeam.roster.forEach((player, i) => { player.name = bobovNames[i]; });
+bobovTeam.roster.forEach((player, i) => {
+  player.name = bobovNames[i];
+  player.appearance = {
+    skinTone: SKIN_TONES[6 + (i % 2)],
+    hairTone: '#2b211b',
+    hairstyle: i % 3 === 0 ? 'curls' : 'taper',
+    facialHair: i % 2 === 0 ? 'fullBeard' : 'beard',
+  };
+});
 
 export type RosterPack = { version: 1; source: string; updatedAt: string; teams: Team[]; omissions?: string[]; modelVersion?: number };
 const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;

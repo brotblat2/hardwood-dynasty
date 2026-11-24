@@ -37,7 +37,7 @@ export function canvasTexture(canvas: HTMLCanvasElement, anisotropy = 1) {
 }
 
 export function makeCourtTexture(blacktop: boolean, anisotropy: number, homeTeam?: Team) {
-  const density = 90;
+  const density = 64;
   const canvas = makeCanvas(Math.round(length * density), Math.round(width * density));
   const ctx = canvas.getContext('2d')!;
   const random = seededRandom(121);
@@ -65,6 +65,31 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number, homeTeam
       ctx.lineTo(lx, z);
       ctx.stroke();
     }
+  } else if (homeTeam?.abbreviation.toUpperCase() === 'BOS') {
+    const tile = 0.78;
+    for (let gx = -lx, col = 0; gx < lx; gx += tile, col++) {
+      for (let gz = -wz, row = 0; gz < wz; gz += tile, row++) {
+        const tw = Math.min(tile, lx - gx);
+        const th = Math.min(tile, wz - gz);
+        const horiz = (row + col) % 2 === 0;
+        const baseL = 67 + ((row * 3 + col * 5) % 6) * 1.4;
+        for (let s = 0; s < 5; s++) {
+          const stripL = baseL + (random() - 0.5) * 4.5 + (horiz ? 1.8 : -1.5);
+          ctx.fillStyle = `hsl(${35 + random() * 4} ${52 + random() * 8}% ${stripL}%)`;
+          if (horiz) ctx.fillRect(gx, gz + (s / 5) * th, tw, th / 5);
+          else ctx.fillRect(gx + (s / 5) * tw, gz, tw / 5, th);
+        }
+        ctx.strokeStyle = '#51321e28';
+        ctx.lineWidth = 0.012;
+        ctx.strokeRect(gx, gz, tw, th);
+      }
+    }
+    const varnish = ctx.createLinearGradient(-lx, -wz, lx, wz);
+    varnish.addColorStop(0, '#96612720');
+    varnish.addColorStop(0.45, '#fff6d224');
+    varnish.addColorStop(1, '#75441722');
+    ctx.fillStyle = varnish;
+    ctx.fillRect(-lx, -wz, COURT.length, COURT.width);
   } else {
     for (let row = 0, z = -wz; z < wz; row++, z += 0.145) {
       const h = Math.min(0.145, wz - z);
@@ -90,6 +115,23 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number, homeTeam
         }
         x += w;
       }
+    }
+    // Two-tone warm stain inside each three-point arc
+    for (const sign of [-1, 1]) {
+      ctx.save();
+      ctx.scale(sign, 1);
+      const corner = wz - 0.9;
+      const angle = Math.asin(corner / COURT.three);
+      const endpoint = COURT.rimX - Math.sqrt(COURT.three ** 2 - corner ** 2);
+      ctx.beginPath();
+      ctx.moveTo(lx, -corner);
+      ctx.lineTo(endpoint, -corner);
+      ctx.arc(COURT.rimX, 0, COURT.three, Math.PI + angle, Math.PI - angle, true);
+      ctx.lineTo(lx, corner);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(130, 74, 24, 0.075)';
+      ctx.fill();
+      ctx.restore();
     }
     const varnish = ctx.createLinearGradient(-lx, -wz, lx, wz);
     varnish.addColorStop(0, '#96612722');
@@ -174,18 +216,39 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number, homeTeam
 
   ctx.fillStyle = paint;
   ctx.beginPath();
-  ctx.arc(0, 0, 1.76, 0, Math.PI * 2);
+  ctx.arc(0, 0, 1.78, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = blacktop ? '#a4beb5' : teamAccent;
-  ctx.lineWidth = 0.045;
+  ctx.lineWidth = 0.06;
   ctx.beginPath();
-  ctx.arc(0, 0, 1.6, 0, Math.PI * 2);
+  ctx.arc(0, 0, 1.62, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.fillStyle = ink;
   if (!blacktop && homeTeam) {
+    // Basketball seam medallion silhouette behind team monogram
+    ctx.save();
+    ctx.strokeStyle = teamAccent;
+    ctx.globalAlpha = 0.34;
+    ctx.lineWidth = 0.035;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.25, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-1.25, 0);
+    ctx.lineTo(1.25, 0);
+    ctx.moveTo(-0.78, -0.96);
+    ctx.quadraticCurveTo(0, 0, -0.78, 0.96);
+    ctx.moveTo(0.78, -0.96);
+    ctx.quadraticCurveTo(0, 0, 0.78, 0.96);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#f8f2e4';
+    ctx.strokeStyle = '#0f1216';
+    ctx.lineWidth = 0.07;
+    ctx.lineJoin = 'round';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `900 ${homeTeam.abbreviation.length > 3 ? 0.95 : 1.18}px sans-serif`;
+    ctx.font = `900 ${homeTeam.abbreviation.length > 3 ? 0.98 : 1.24}px sans-serif`;
+    ctx.strokeText(homeTeam.abbreviation, 0, 0.04, 2.7);
     ctx.fillText(homeTeam.abbreviation, 0, 0.04, 2.7);
   } else {
     ctx.beginPath();
@@ -268,11 +331,68 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number, homeTeam
   return canvasTexture(canvas, anisotropy);
 }
 
+export function makeCourtMaps(blacktop: boolean, anisotropy: number, parquet = false) {
+  const bCanvas = makeCanvas(256, 256);
+  const rCanvas = makeCanvas(256, 256);
+  const bCtx = bCanvas.getContext('2d')!;
+  const rCtx = rCanvas.getContext('2d')!;
+  if (blacktop) {
+    const random = seededRandom(33);
+    bCtx.fillStyle = '#808080';
+    bCtx.fillRect(0, 0, 256, 256);
+    rCtx.fillStyle = '#dedede';
+    rCtx.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2400; i++) {
+      bCtx.fillStyle = i % 2 ? '#b8b8b8' : '#4a4a4a';
+      bCtx.fillRect(random() * 256, random() * 256, 2, 2);
+    }
+  } else if (parquet) {
+    bCtx.fillStyle = '#bdbdbd';
+    bCtx.fillRect(0, 0, 256, 256);
+    rCtx.fillStyle = '#707070';
+    rCtx.fillRect(0, 0, 256, 256);
+    for (let gy = 0; gy < 256; gy += 64) {
+      for (let gx = 0; gx < 256; gx += 64) {
+        const horiz = ((gx + gy) / 64) % 2 === 0;
+        rCtx.fillStyle = horiz ? '#626262' : '#7c7c7c';
+        rCtx.fillRect(gx, gy, 64, 64);
+        bCtx.fillStyle = '#606060';
+        for (let s = 0; s < 64; s += 16) {
+          if (horiz) bCtx.fillRect(gx, gy + s, 64, 2);
+          else bCtx.fillRect(gx + s, gy, 2, 64);
+        }
+        bCtx.fillRect(gx, gy, 64, 2);
+        bCtx.fillRect(gx, gy, 2, 64);
+      }
+    }
+  } else {
+    bCtx.fillStyle = '#c8c8c8';
+    bCtx.fillRect(0, 0, 256, 256);
+    rCtx.fillStyle = '#6c6c6c';
+    rCtx.fillRect(0, 0, 256, 256);
+    for (let y = 0; y < 256; y += 16) {
+      bCtx.fillStyle = '#606060';
+      bCtx.fillRect(0, y, 256, 2);
+      rCtx.fillStyle = (y / 16) % 2 === 0 ? '#656565' : '#787878';
+      rCtx.fillRect(0, y + 2, 256, 14);
+      const join = ((y / 16) * 73) % 256;
+      bCtx.fillRect(join, y, 2, 16);
+    }
+  }
+  const setup = (c: HTMLCanvasElement) => {
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = anisotropy;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(8, 5);
+    return tex;
+  };
+  return { bumpMap: setup(bCanvas), roughnessMap: setup(rCanvas) };
+}
+
 export function makeCourt() {
-  const material = new THREE.MeshPhysicalMaterial({
-    roughness: 0.42,
-    clearcoat: 0.46,
-    clearcoatRoughness: 0.31,
+  const material = new THREE.MeshStandardMaterial({
+    roughness: 0.34,
+    bumpScale: 0.006,
     metalness: 0,
     side: THREE.FrontSide,
   });
@@ -284,30 +404,51 @@ export function makeCourt() {
 
 export function makeBall(anisotropy: number) {
   const canvas = makeCanvas(512, 256);
+  const bumpCanvas = makeCanvas(512, 256);
   const ctx = canvas.getContext('2d')!;
+  const bCtx = bumpCanvas.getContext('2d')!;
   const random = seededRandom(6);
   ctx.fillStyle = '#d27128';
   ctx.fillRect(0, 0, 512, 256);
-  for (let i = 0; i < 3400; i++) {
+  bCtx.fillStyle = '#909090';
+  bCtx.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 4200; i++) {
+    const px = random() * 512;
+    const py = random() * 256;
     ctx.fillStyle = i % 2 ? '#3d170e22' : '#ffd29f40';
-    ctx.fillRect(random() * 512, random() * 256, 1.7, 1.7);
+    ctx.fillRect(px, py, 1.7, 1.7);
+    bCtx.fillStyle = i % 2 ? '#e0e0e0' : '#4a4a4a';
+    bCtx.fillRect(px, py, 1.6, 1.6);
   }
   ctx.strokeStyle = '#341b13';
   ctx.lineWidth = 5;
+  bCtx.strokeStyle = '#181818';
+  bCtx.lineWidth = 6;
   for (const x of [0, 128, 256, 384, 512]) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.bezierCurveTo(x - 42, 74, x + 42, 182, x, 256);
-    ctx.stroke();
+    for (const c of [ctx, bCtx]) {
+      c.beginPath();
+      c.moveTo(x, 0);
+      c.bezierCurveTo(x - 42, 74, x + 42, 182, x, 256);
+      c.stroke();
+    }
   }
-  ctx.beginPath();
-  ctx.moveTo(0, 128);
-  ctx.lineTo(512, 128);
-  ctx.stroke();
+  for (const c of [ctx, bCtx]) {
+    c.beginPath();
+    c.moveTo(0, 128);
+    c.lineTo(512, 128);
+    c.stroke();
+  }
+  const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+  bumpMap.anisotropy = anisotropy;
 
   const ball = new THREE.Mesh(
-    new THREE.SphereGeometry(0.122, 28, 18),
-    new THREE.MeshStandardMaterial({ map: canvasTexture(canvas, anisotropy), roughness: 0.67 }),
+    new THREE.SphereGeometry(0.122, 24, 16),
+    new THREE.MeshStandardMaterial({
+      map: canvasTexture(canvas, anisotropy),
+      bumpMap,
+      bumpScale: 0.004,
+      roughness: 0.52,
+    }),
   );
   ball.castShadow = true;
   return ball;

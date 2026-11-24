@@ -10,6 +10,8 @@ import { advanceOffseason, addExpansionTeam, createFranchise, draftProspect, get
 import type { FranchiseState } from '../../../packages/franchise/index.ts';
 import { careerLineup, completeCombine, createCareer, draftPlayer, recordCareerGame, trainPlayer, trainingCost } from '../../../packages/career/index.ts';
 import type { Archetype, Career, CareerPath, Interview } from '../../../packages/career/index.ts';
+import type { FacialHair, Hairstyle, SleeveSide } from '../../../packages/contracts/index.ts';
+import { FACIAL_HAIR_STYLES, HAIR_STYLES, HAIR_TONES, SKIN_TONES } from '../../../packages/rendering/appearance.ts';
 import { contractLabel, Field, numberLabel, PageHeading, readLocal, TeamChip, teamLabel, writeLocal } from './App.tsx';
 import type { MatchSetup } from './Match.tsx';
 
@@ -278,12 +280,60 @@ function Expansion({ state, run }: { state: FranchiseState; run(action: () => Fr
   </form>;
 }
 
+const formatLabel = (value: string) => value.replace(/([A-Z])/g, ' $1').replace(/^./, ch => ch.toUpperCase());
+const toImperialHeight = (cm: number) => {
+  const totalIn = Math.round(cm / 2.54);
+  return `${Math.floor(totalIn / 12)}'${totalIn % 12}"`;
+};
+
+function PlayerAvatarPreview({ skinTone, hairstyle, hairTone, facialHair, headband, armSleeve, height, wingspanCm, weight }: {
+  skinTone: string; hairstyle: Hairstyle; hairTone: string; facialHair: FacialHair; headband: boolean; armSleeve: SleeveSide;
+  height: number; wingspanCm: number; weight: number;
+}) {
+  const h = hairstyle.toLowerCase();
+  const f = facialHair.toLowerCase();
+  return <div className="myplayer-preview" aria-label="MyPlayer preview">
+    <svg viewBox="0 0 96 108" width="96" height="108">
+      <rect width="96" height="108" rx="10" fill="#131926" />
+      <path d="M22 96 C22 76 34 70 48 70 C62 70 74 76 74 96 Z" fill="#2563eb" />
+      <path d="M39 70 L48 80 L57 70" fill="#f8fafc" stroke="#f59e0b" strokeWidth="2" />
+      {(armSleeve === 'left' || armSleeve === 'both') && <rect x="19" y="80" width="9" height="22" rx="4" fill="#0f172a" stroke="#e2e8f0" strokeWidth="1" />}
+      {(armSleeve === 'right' || armSleeve === 'both') && <rect x="68" y="80" width="9" height="22" rx="4" fill="#0f172a" stroke="#e2e8f0" strokeWidth="1" />}
+      <rect x="42" y="56" width="12" height="16" rx="4" fill={skinTone} />
+      {h.includes('afro') && <circle cx="48" cy="34" r="24" fill={hairTone} />}
+      {(h.includes('loc') || h.includes('braid') || h.includes('long')) && <>
+        <circle cx="48" cy="34" r="21" fill={hairTone} />
+        {[29, 34, 62, 67].map(x => <rect key={x} x={x - 2} y="34" width="4" height="26" rx="2" fill={hairTone} />)}
+      </>}
+      <ellipse cx="48" cy="40" rx="16" ry="19" fill={skinTone} />
+      {(h.includes('fade') || h.includes('taper') || h.includes('buzz') || h.includes('medium') || h.includes('curl')) && !h.includes('shaved') && (
+        <path d="M32 35 C32 19 64 19 64 35 C58 28 38 28 32 35 Z" fill={hairTone} />
+      )}
+      {headband && <rect x="31.5" y="25" width="33" height="5" rx="2" fill="#f8fafc" />}
+      <circle cx="42" cy="39" r="1.7" fill="#111827" />
+      <circle cx="54" cy="39" r="1.7" fill="#111827" />
+      {f === 'stubble' && <path d="M35 45 C36 56 60 56 61 45" fill="none" stroke={hairTone} strokeOpacity="0.45" strokeWidth="4" />}
+      {f === 'goatee' && <path d="M42 46 L54 46 L52 57 L44 57 Z" fill={hairTone} />}
+      {f.includes('beard') && <path d="M33 41 C33 58 63 58 63 41 C58 50 38 50 33 41 Z" fill={hairTone} />}
+    </svg>
+    <small>{height} cm ({toImperialHeight(height)}) · Span {toImperialHeight(wingspanCm)} · {Math.round(weight * 2.20462)} lb</small>
+  </div>;
+}
+
 export function CareerHub({ teams, difficulty, start }: HubProps) {
   const [career, setCareer] = useState(() => readLocal<Career>('career'));
   const [name, setName] = useState('');
   const [position, setPosition] = useState<Position>('SG');
   const [height, setHeight] = useState(196);
   const [weight, setWeight] = useState(92);
+  const [spanMult, setSpanMult] = useState(1.045);
+  const [skinTone, setSkinTone] = useState<string>(SKIN_TONES[3]);
+  const [hairstyle, setHairstyle] = useState<Hairstyle>(() => HAIR_STYLES[0]);
+  const [hairTone, setHairTone] = useState<string>(HAIR_TONES[0]);
+  const [facialHair, setFacialHair] = useState<FacialHair>(() => FACIAL_HAIR_STYLES[0]);
+  const [headband, setHeadband] = useState(false);
+  const [armSleeve, setArmSleeve] = useState<SleeveSide>('none');
+  const [legSleeve, setLegSleeve] = useState<SleeveSide>('none');
   const [archetype, setArchetype] = useState<Archetype>('Sharpshooter');
   const [path, setPath] = useState<CareerPath>('College');
   const [interview, setInterview] = useState<Interview>('Craft');
@@ -291,18 +341,74 @@ export function CareerHub({ teams, difficulty, start }: HubProps) {
   const [combine, setCombine] = useState<number | null>(null);
   const [teamControl, setTeamControl] = useState(false);
   const save = (next: Career) => { setCareer(next); writeLocal('career', next); };
+  const clampedHeight = Math.max(168, Math.min(224, Number.isFinite(height) ? height : 196));
+  const clampedWeight = Math.max(60, Math.min(145, Number.isFinite(weight) ? weight : 92));
+  const wingspanCm = Math.round(clampedHeight * spanMult);
   if (!career) return <>
     <PageHeading title="MyPlayer" subtitle="Create a prospect and earn your spot in the league." />
     <form className="panel form-panel compact-form" onSubmit={event => {
       event.preventDefault();
-      save(createCareer({ name, position, height: height / 100, weight, archetype, path, seed: Date.now() }));
+      save(createCareer({
+        name, position, height: clampedHeight / 100, weight: clampedWeight,
+        wingspan: Math.round((clampedHeight / 100) * spanMult * 100) / 100,
+        appearance: { skinTone, hairstyle, hairTone, facialHair, headband, armSleeve, legSleeve },
+        archetype, path, seed: Date.now(),
+      }));
     }}>
       <h2>Create your player</h2>
       <Field label="Player name"><input value={name} maxLength={32} required onChange={event => setName(event.target.value)} placeholder="First and last name" /></Field>
       <div className="settings-row">
         <Field label="Position"><select value={position} onChange={event => setPosition(event.target.value as Position)}>{['PG', 'SG', 'SF', 'PF', 'C'].map(value => <option key={value}>{value}</option>)}</select></Field>
-        <Field label="Height (cm)"><input type="number" min="168" max="224" value={height} onChange={event => setHeight(Number(event.target.value))} /></Field>
-        <Field label="Weight (kg)"><input type="number" min="60" max="145" value={weight} onChange={event => setWeight(Number(event.target.value))} /></Field>
+        <Field label={`Height (${toImperialHeight(clampedHeight)})`}><input type="number" min="168" max="224" value={height} onChange={event => setHeight(Number(event.target.value))} /></Field>
+        <Field label={`Weight (${Math.round(clampedWeight * 2.20462)} lb)`}><input type="number" min="60" max="145" value={weight} onChange={event => setWeight(Number(event.target.value))} /></Field>
+      </div>
+      <div className="myplayer-studio">
+        <PlayerAvatarPreview skinTone={skinTone} hairstyle={hairstyle} hairTone={hairTone} facialHair={facialHair} headband={headband} armSleeve={armSleeve} height={clampedHeight} wingspanCm={wingspanCm} weight={clampedWeight} />
+        <div>
+          <Field label={`Wingspan (${wingspanCm} cm · ${toImperialHeight(wingspanCm)})`}>
+            <select value={String(spanMult)} onChange={event => setSpanMult(Number(event.target.value))}>
+              <option value="1">Short (1.00x height)</option>
+              <option value="1.045">Standard (1.045x height)</option>
+              <option value="1.08">Long (1.08x height)</option>
+              <option value="1.12">Max (1.12x height)</option>
+            </select>
+          </Field>
+          <Field label="Skin tone">
+            <div className="swatch-grid">
+              {SKIN_TONES.map((tone, idx) => <button type="button" key={tone} aria-label={`Skin tone ${idx + 1}`} className={'swatch-btn' + (skinTone === tone ? ' active' : '')} style={{ background: tone }} onClick={() => setSkinTone(tone)} />)}
+            </div>
+          </Field>
+          <div className="settings-row">
+            <Field label="Hairstyle">
+              <select value={hairstyle} onChange={event => setHairstyle(event.target.value as Hairstyle)}>
+                {HAIR_STYLES.map(style => <option key={style} value={style}>{formatLabel(style)}</option>)}
+              </select>
+            </Field>
+            <Field label="Facial hair">
+              <select value={facialHair} onChange={event => setFacialHair(event.target.value as FacialHair)}>
+                {FACIAL_HAIR_STYLES.map(style => <option key={style} value={style}>{formatLabel(style)}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="Hair color">
+            <div className="swatch-grid">
+              {HAIR_TONES.map((tone, idx) => <button type="button" key={tone} aria-label={`Hair color ${idx + 1}`} className={'swatch-btn' + (hairTone === tone ? ' active' : '')} style={{ background: tone }} onClick={() => setHairTone(tone)} />)}
+            </div>
+          </Field>
+          <div className="settings-row">
+            <Field label="Arm sleeve">
+              <select value={armSleeve} onChange={event => setArmSleeve(event.target.value as SleeveSide)}>
+                {(['none', 'left', 'right', 'both'] as SleeveSide[]).map(side => <option key={side} value={side}>{formatLabel(side)}</option>)}
+              </select>
+            </Field>
+            <Field label="Leg sleeve">
+              <select value={legSleeve} onChange={event => setLegSleeve(event.target.value as SleeveSide)}>
+                {(['none', 'left', 'right', 'both'] as SleeveSide[]).map(side => <option key={side} value={side}>{formatLabel(side)}</option>)}
+              </select>
+            </Field>
+            <label className="check-inline"><input type="checkbox" checked={headband} onChange={event => setHeadband(event.target.checked)} /> Headband</label>
+          </div>
+        </div>
       </div>
       <Field label="Archetype"><select value={archetype} onChange={event => setArchetype(event.target.value as Archetype)}>{['Sharpshooter', 'Slasher', 'Playmaker', 'Two-way wing', 'Stretch big', 'Anchor', 'Post scorer', 'Three-level scorer'].map(value => <option key={value}>{value}</option>)}</select></Field>
       <Field label="Background"><select value={path} onChange={event => setPath(event.target.value as CareerPath)}><option>College</option><option>International</option></select></Field>

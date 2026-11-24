@@ -10,7 +10,9 @@ export function makeGameCamera(camera: PerspectiveCamera) {
   let lastTick = -1;
   let lastView: Camera | undefined;
   let lastAspect = 0;
-  let currentAttack = 1;
+  let confirmedAttack = 1;
+  let flipHold = 0;
+  let camAngle = 0;
 
   return function placeCamera(state: GameState, view: Camera, selectedId: string | undefined, dt: number) {
     const half = state.config.halfCourt === true;
@@ -18,8 +20,26 @@ export function makeGameCamera(camera: PerspectiveCamera) {
     const zoom = Math.max(1, 1.53 / camera.aspect);
     const center = half ? MathUtils.clamp(6.7 + (x - 6.7) * 0.31, 5.6, 8.8) : MathUtils.clamp(x * 0.56, -7.2, 7.2);
     const reset = state.tick < lastTick || lastView !== view || lastAspect !== camera.aspect;
-    const targetAttack = half ? 1 : attackSign(state.possession);
-    currentAttack = reset ? targetAttack : MathUtils.lerp(currentAttack, targetAttack, 1 - Math.exp(-dt * 3.2));
+    const rawTarget = half ? 1 : attackSign(state.possession);
+    if (reset || state.phase === 'dead') {
+      confirmedAttack = rawTarget;
+      flipHold = 0;
+    } else if (rawTarget !== confirmedAttack) {
+      flipHold = state.ball.ownerId !== null ? flipHold + dt : 0;
+      if (flipHold >= 0.28) {
+        confirmedAttack = rawTarget;
+        flipHold = 0;
+      }
+    } else {
+      flipHold = 0;
+    }
+    const desiredAngle = confirmedAttack > 0 ? 0 : Math.PI;
+    if (reset) {
+      camAngle = desiredAngle;
+    } else {
+      camAngle += (desiredAngle - camAngle) * (1 - Math.exp(-dt * 3.4));
+    }
+    const targetAttack = confirmedAttack;
 
     let fov = 38;
     if (state.freeThrow && view !== 'player' && view !== 'cinematic') {
@@ -40,9 +60,16 @@ export function makeGameCamera(camera: PerspectiveCamera) {
         }
       }
     } else if (view === '2k') {
-      target.set(center + currentAttack * 5.2, 1.35, z * 0.22);
-      position.set(center - currentAttack * (half ? 11.4 : 13.6) * zoom, (half ? 7.6 : 8.5) * zoom, MathUtils.clamp(z * 0.34, -3.4, 3.4));
-      fov = 44;
+      const dirX = Math.cos(camAngle);
+      const orbitZ = Math.sin(camAngle);
+      const dist = (half ? 10.2 : 12.2) * zoom;
+      target.set(center + dirX * 4.6, 1.35, z * 0.2);
+      position.set(
+        center - dirX * dist,
+        (half ? 6.8 : 7.8) * zoom + orbitZ * 2.2 * zoom,
+        MathUtils.clamp(z * 0.32, -2.8, 2.8) * (1 - orbitZ) + orbitZ * 14.5 * zoom,
+      );
+      fov = 42;
     } else if (view === 'baseline') {
       // Keep the viewing axis stable when a pass or dribble crosses midcourt.
       const team = state.players.find(player => player.id === selectedId)?.side ?? 0;
@@ -86,8 +113,8 @@ export function makeGameCamera(camera: PerspectiveCamera) {
       const lead = targetAttack * 1.45;
       const midZoom = 1 + Math.max(0, 1 - Math.abs(x) / 6) * 0.08;
       const distance = (half ? 0.85 : 1) * zoom * midZoom;
-      target.set(center + lead * 0.5, 0.68, z * 0.15);
-      position.set(center + (half ? -0.75 : 0.8) + lead * 0.25, 15.7 * distance, 20.2 * distance + z * 0.16);
+      target.set(center + lead * 0.5, 0.72, z * 0.15);
+      position.set(center + (half ? -0.75 : 0.8) + lead * 0.25, 13.8 * distance, 18.4 * distance + z * 0.16);
     }
 
     let impactAge = Infinity;

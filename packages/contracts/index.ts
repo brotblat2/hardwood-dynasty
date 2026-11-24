@@ -7,13 +7,23 @@ export type Ratings = {
   shooting: number; finishing: number; passing: number; handling: number;
   rebounding: number; speed: number; perimeter: number; interior: number; iq: number; durability: number; strength?: number;
 };
+export type Hairstyle = 'shaved' | 'buzz' | 'fade' | 'taper' | 'curls' | 'afro' | 'braids' | 'locs' | 'medium' | 'long';
+export type FacialHair = 'none' | 'stubble' | 'goatee' | 'beard' | 'fullBeard';
+export type SleeveSide = 'none' | 'left' | 'right' | 'both';
+export type JerseyKit = 'home' | 'away' | 'statement' | 'city';
+export type JerseyPattern = 'classic' | 'sidePanel' | 'pinstripe' | 'sash' | 'chevron' | 'hoopBand' | 'sunburst' | 'herringbone';
+export type PlayerAppearance = {
+  portraitUrl?: string; skinTone?: string; hairTone?: string; hairstyle?: Hairstyle;
+  facialHair?: FacialHair; headband?: boolean; armSleeve?: SleeveSide; legSleeve?: SleeveSide; shoeColor?: string;
+};
 export type Player = {
   id: string; name: string; number: number; position: Position; height: number; weight?: number; wingspan?: number; age: number;
-  appearance?: { portraitUrl?: string; skinTone?: string; hairTone?: string; hairstyle?: 'buzz' | 'fade' | 'curls' | 'braids' | 'shaved' };
+  appearance?: PlayerAppearance;
   overall: number; potential: number; gradeEvidence?: 'established' | 'limited' | 'estimated'; ratings: Ratings; salary?: number; years?: number;
 };
 export type Team = {
   id: string; city: string; name: string; abbreviation: string; color: string; accent: string;
+  tertiaryColor?: string; jerseyPattern?: JerseyPattern;
   conference: 'East' | 'West'; roster: Player[];
 };
 export type OffensePlay = 'motion' | 'pickAndRoll' | 'iso' | 'fiveOut';
@@ -36,6 +46,8 @@ export type PlayerAction = {
   jumpHeight?: number;
   gatherPhase?: number;
   deadDribble?: boolean;
+  postUp?: boolean;
+  hotStreak?: number;
 };
 export type ShotTimingGrade = 'Green' | 'Excellent' | 'Slightly Early' | 'Slightly Late' | 'Early' | 'Late';
 export type ContestLevel = 'Open' | 'Light' | 'Tight' | 'Smothered';
@@ -54,12 +66,12 @@ export type Control = {
   screen?: boolean; dribble?: boolean; timeout?: boolean; substituteId?: string;
   shotType?: ShotType;
   pumpFake?: boolean; callScreen?: boolean; callPass?: boolean;
-  intenseD?: boolean; dribbleDir?: Vec2;
+  intenseD?: boolean; postUp?: boolean; dribbleDir?: Vec2;
   offensePlay?: OffensePlay; defenseScheme?: DefenseScheme;
 };
 export type GamePlayer = {
   id: string; side: Side; profile: Player; position: Vec2; velocity: Vec2; facing: number;
-  stamina: number; pose: 'idle' | 'run' | 'dribble' | 'shoot' | 'contest' | 'screen' | 'pumpFake' | 'steal' | 'slide' | 'stumble' | 'bodyUp' | 'flyBy';
+  stamina: number; pose: 'idle' | 'run' | 'dribble' | 'shoot' | 'contest' | 'screen' | 'pumpFake' | 'steal' | 'slide' | 'stumble' | 'bodyUp' | 'flyBy' | 'postUp';
   action?: PlayerAction;
 };
 export type Ball = {
@@ -74,6 +86,7 @@ export type GameConfig = {
   mode?: 'regulation' | 'blacktop' | 'practice'; periodSeconds?: number; periods?: number;
   playersPerTeam?: number; targetScore?: number; halfCourt?: boolean; makeItTakeIt?: boolean;
   difficulty?: Difficulty; seed?: number; scoring?: { inside: number; outside: number };
+  kits?: [JerseyKit, JerseyKit];
 };
 export type GameState = {
   tick: number; teams: [Team, Team]; players: GamePlayer[]; ball: Ball; score: [number, number];

@@ -5,6 +5,7 @@ import { makeCourtTexture, seededRandom } from './court.ts';
 import { courtMovement } from './input-view.ts';
 import { appearanceFor } from './appearance.ts';
 import { makeGameCamera } from './camera.ts';
+import { resolveKitPalette } from './jerseys.ts';
 import { makeMotion, motionEvents } from './motion.ts';
 import { netResponse } from './equipment.ts';
 import type { Camera, GameRenderer, RenderHints, RendererOptions } from './index.ts';
@@ -380,12 +381,12 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     let actor = actors.get(player.id);
     if (!actor) {
       const appearance = appearanceFor(player.profile);
-      actor = { appearance, motion: makeMotion(appearance.stature, appearance.thickness, appearance.hash) };
+      actor = { appearance, motion: makeMotion(appearance.stature, appearance.thickness, appearance.hash, appearance.armScale) };
       actors.set(player.id, actor);
     }
     const { x, z } = player.position;
     const ground = project(x, 0, z);
-    const { stature, thickness, skin, hair: hairstyle, hairColor, hash } = actor.appearance;
+    const { stature, thickness, shoulderScale, limbBulk, armScale, headScale, skin, hair: hairstyle, hairColor, facialHair, headband, armSleeve, legSleeve, hash } = actor.appearance;
     const charge = state.charge[player.id] ?? 0;
     const heldBall = state.ball.ownerId === player.id ? state.ball.position : undefined;
     const pose = actor.motion(player, state.tick, heldBall, charge, event);
@@ -397,17 +398,21 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     const fx = Math.cos(pose.facing);
     const fz = Math.sin(pose.facing);
     const team = state.teams[player.side];
-    const jersey = player.side === 0 ? team.color : '#ede9dd';
-    const strip = player.side === 0 ? team.accent : team.color;
-    const shorts = player.side === 0 ? jersey : '#e3ddd1';
-    const boot = hash % 3 === 1 ? '#353739' : '#e5e5da';
-    const sole = hash % 3 === 1 ? '#a4aba3' : '#414745';
-    const socks = hash % 7 === 0 ? strip : '#e5e4d9';
+    const requestedKit = state.config.kits?.[player.side];
+    const avoid = player.side === 1 ? resolveKitPalette(state.teams[0], 0, state.config.kits?.[0]).base : undefined;
+    const palette = resolveKitPalette(team, player.side, requestedKit, avoid);
+    const jersey = palette.base;
+    const strip = palette.accent;
+    const shorts = palette.shortsBase;
+    const boot = actor.appearance.shoeColor ?? (hash % 3 === 1 ? '#2b2d30' : '#ecebe2');
+    const sole = hash % 3 === 1 ? strip : '#353a3d';
+    const socks = hash % 5 === 0 ? strip : '#e5e4d9';
     const at = (side: number, y: number, forward: number) => project(x + scale * (side * fz + forward * fx),
       scale * (y + pose.rise), z + scale * (-side * fx + forward * fz));
     const joint = ({ x, y, z }: Vec3) => at(x, y, z);
-    const upper = (side: number, y: number, forward: number) => at(side * thickness - (y - 1.29) * pose.roll, y - pose.crouch,
+    const upper = (side: number, y: number, forward: number) => at(side * shoulderScale - (y - 1.29) * pose.roll, y - pose.crouch,
       forward + (y - 1.29) * pose.tilt - side * pose.twist);
+    const headPt = (side: number, y: number, forward: number) => upper(side * headScale * (0.9 + 0.1 / Math.max(0.8, shoulderScale)), 1.74 + (y - 1.74) * headScale, forward * headScale);
     const towardCamera = (camera.position.x - x) * fx + (camera.position.z - z) * fz;
     const acrossCamera = (camera.position.x - x) * fz - (camera.position.z - z) * fx;
     const showFront = towardCamera >= 0 ? 1 : -1;
@@ -483,14 +488,19 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       const a = joint(limb.start);
       const b = joint(limb.joint);
       const c = joint(limb.end);
-      tapered(target, skin, a, b, unit * 0.074 * thickness, unit * 0.1 * thickness, unit * 0.052 * thickness);
-      tapered(target, skin, b, c, unit * 0.051 * thickness, unit * 0.072 * thickness, unit * 0.032 * thickness);
+      tapered(target, skin, a, b, unit * 0.074 * limbBulk, unit * 0.1 * limbBulk, unit * 0.052 * limbBulk);
+      tapered(target, skin, b, c, unit * 0.051 * limbBulk, unit * 0.072 * limbBulk, unit * 0.032 * limbBulk);
+      if (armSleeve === 'both' || (i === 0 && armSleeve === 'left') || (i === 1 && armSleeve === 'right')) {
+        const sTop = at(limb.joint.x * 0.6 + limb.start.x * 0.4, limb.joint.y * 0.6 + limb.start.y * 0.4, limb.joint.z * 0.6 + limb.start.z * 0.4);
+        const sBot = at(limb.end.x * 0.85 + limb.joint.x * 0.15, limb.end.y * 0.85 + limb.joint.y * 0.15, limb.end.z * 0.85 + limb.joint.z * 0.15);
+        tapered(target, palette.kit === 'home' ? '#1a1c20' : strip, sTop, sBot, unit * 0.068 * limbBulk, unit * 0.068 * limbBulk, unit * 0.044 * limbBulk);
+      }
       if (i === 1 && hash % 5 === 0) {
         const cuff = at(limb.end.x * 0.83 + limb.joint.x * 0.17, limb.end.y * 0.83 + limb.joint.y * 0.17, limb.end.z * 0.83 + limb.joint.z * 0.17);
         tapered(target, strip, cuff, c, unit * 0.04, unit * 0.042, unit * 0.036);
       }
-      const hand = at(limb.end.x + (limb.end.x - limb.joint.x) * 0.12, limb.end.y + (limb.end.y - limb.joint.y) * 0.12 + limb.pitch * 0.026,
-        limb.end.z + (limb.end.z - limb.joint.z) * 0.12);
+      const hand = at(limb.end.x + (limb.end.x - limb.joint.x) * 0.12 * armScale, limb.end.y + (limb.end.y - limb.joint.y) * 0.12 * armScale + limb.pitch * 0.026,
+        limb.end.z + (limb.end.z - limb.joint.z) * 0.12 * armScale);
       tapered(target, skin, c, hand, unit * 0.032, unit * 0.052, unit * 0.041);
     };
 
@@ -500,8 +510,13 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       const knee = joint(limb.joint);
       const ankle = joint(limb.end);
       const hem = at(limb.joint.x * 0.83 + limb.start.x * 0.17, limb.joint.y * 0.83 + limb.start.y * 0.17, limb.joint.z * 0.83 + limb.start.z * 0.17);
-      tapered(target, skin, knee, ankle, unit * 0.057 * thickness, unit * 0.105 * thickness, unit * 0.034 * thickness);
-      tapered(target, shorts, hip, hem, unit * 0.105 * thickness, unit * 0.139 * thickness, unit * 0.095 * thickness);
+      tapered(target, skin, knee, ankle, unit * 0.057 * limbBulk, unit * 0.105 * limbBulk, unit * 0.034 * limbBulk);
+      if (legSleeve === 'both' || (i === 0 && legSleeve === 'left') || (i === 1 && legSleeve === 'right')) {
+        const lTop = at(limb.joint.x * 0.85 + limb.start.x * 0.15, limb.joint.y * 0.85 + limb.start.y * 0.15, limb.joint.z * 0.85 + limb.start.z * 0.15);
+        const lBot = at(limb.end.x * 0.6 + limb.joint.x * 0.4, limb.end.y * 0.6 + limb.joint.y * 0.4, limb.end.z * 0.6 + limb.joint.z * 0.4);
+        tapered(target, palette.kit === 'home' ? '#1a1c20' : strip, lTop, lBot, unit * 0.075 * limbBulk, unit * 0.08 * limbBulk, unit * 0.062 * limbBulk);
+      }
+      tapered(target, shorts, hip, hem, unit * 0.105 * limbBulk, unit * 0.139 * limbBulk, unit * 0.095 * limbBulk);
       if (detail) {
         const seam = i === 0 ? -0.098 : 0.098;
         line(target, strip, Math.max(0.65, unit * 0.018), at(limb.start.x + seam, limb.start.y, limb.start.z + 0.035),
@@ -541,47 +556,55 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       target.scale(Math.min(1.05, widthFactor), 1);
       target.textAlign = 'center';
       target.textBaseline = 'middle';
-      target.fillStyle = player.side === 0 ? '#fbf4df' : '#1b2528';
+      target.fillStyle = palette.ink;
       target.font = `900 ${Math.max(5.4 * ratio, size * 0.139)}px sans-serif`;
       target.fillText(String(player.profile.number), 0, 0);
       if (detail && size > 58 * ratio) {
         target.font = `800 ${Math.max(3.1 * ratio, size * 0.045)}px sans-serif`;
-        target.fillText(team.abbreviation, 0, -size * 0.085);
+        target.fillText(palette.wordmark, 0, -size * 0.085);
       }
       target.restore();
     }
     paintArm(order[1]);
 
-    const skull = upper(0, 1.888, 0.009);
-    const jaw = upper(0, 1.833, 0.037);
+    const skull = headPt(0, 1.888, 0.009);
+    const jaw = headPt(0, 1.833, 0.037);
     const skullColor = lit(target, skin, { ...skull, x: skull.x + unit * 0.10, y: skull.y + unit * 0.06 }, { ...skull, x: skull.x - unit * 0.11, y: skull.y - unit * 0.1 });
-    disc(target, jaw, unit * 0.076, unit * 0.083, skullColor);
-    disc(target, skull, unit * 0.094, unit * 0.11, skullColor);
+    disc(target, jaw, unit * 0.076 * headScale, unit * 0.083 * headScale, skullColor);
+    disc(target, skull, unit * 0.094 * headScale, unit * 0.11 * headScale, skullColor);
     if (detail) {
-      const ear = upper(acrossCamera >= 0 ? 0.086 : -0.086, 1.87, 0.006);
-      disc(target, ear, unit * 0.018, unit * 0.028, colors(skin)[2]);
+      const ear = headPt(acrossCamera >= 0 ? 0.086 : -0.086, 1.87, 0.006);
+      disc(target, ear, unit * 0.018 * headScale, unit * 0.028 * headScale, colors(skin)[2]);
     }
     if (hairstyle !== 'shaved') {
-      const top = upper(0, hairstyle === 'curls' ? 1.982 : 1.969, -0.028);
+      const top = headPt(0, hairstyle === 'curls' || hairstyle === 'afro' ? 1.982 : 1.969, -0.028);
       const hairTint = lit(target, hairColor, { ...top, x: top.x + unit * 0.09 }, { ...top, x: top.x - unit * 0.09 });
-      disc(target, top, unit * (hairstyle === 'curls' ? 0.101 : 0.091), unit * (hairstyle === 'buzz' ? 0.035 : 0.053), hairTint);
+      const hairRx = unit * (hairstyle === 'afro' ? 0.145 : hairstyle === 'curls' ? 0.101 : 0.091) * headScale;
+      const hairRy = unit * (hairstyle === 'afro' ? 0.118 : hairstyle === 'buzz' ? 0.035 : 0.055) * headScale;
+      disc(target, top, hairRx, hairRy, hairTint);
       if (detail && hairstyle === 'curls') {
         for (let curl = 0; curl < 5; curl++) {
           const angle = curl * 2.399;
-          disc(target, upper(Math.cos(angle) * 0.065, 1.993 + (curl % 2) * 0.013, Math.sin(angle) * 0.05 - 0.022), unit * 0.029, unit * 0.025, hairTint);
+          disc(target, headPt(Math.cos(angle) * 0.065, 1.993 + (curl % 2) * 0.013, Math.sin(angle) * 0.05 - 0.022), unit * 0.029 * headScale, unit * 0.025 * headScale, hairTint);
         }
       }
-      if (detail && hairstyle === 'braids') {
-        for (const side of [-0.05, -0.018, 0.019, 0.05]) line(target, hairColor, unit * 0.014, upper(side, 1.976, -0.06), upper(side, 1.863, -0.105));
+      if (detail && (hairstyle === 'braids' || hairstyle === 'locs' || hairstyle === 'long')) {
+        for (const side of [-0.05, -0.018, 0.019, 0.05]) line(target, hairColor, unit * (hairstyle === 'locs' ? 0.021 : 0.014) * headScale, headPt(side, 1.976, -0.06), headPt(side, hairstyle === 'long' ? 1.79 : 1.863, -0.105));
       }
     }
     if (detail && towardCamera > 0) {
-      const nose = upper(0, 1.866, 0.108);
-      disc(target, nose, unit * 0.016, unit * 0.018, colors(skin)[0]);
-      for (const side of [-1, 1]) line(target, colors(skin)[2], Math.max(0.52, unit * 0.009), upper(side * 0.025, 1.905, 0.093), upper(side * 0.063, 1.901, 0.077));
-      if (hash % 6 === 0) line(target, hairColor, unit * 0.023, upper(-0.051, 1.843, 0.087), upper(0, 1.821, 0.086), upper(0.051, 1.843, 0.087));
+      const nose = headPt(0, 1.866, 0.108);
+      disc(target, nose, unit * 0.016 * headScale, unit * 0.018 * headScale, colors(skin)[0]);
+      for (const side of [-1, 1]) line(target, colors(skin)[2], Math.max(0.52, unit * 0.009), headPt(side * 0.025, 1.905, 0.093), headPt(side * 0.063, 1.901, 0.077));
+      if (facialHair === 'goatee') {
+        disc(target, headPt(0, 1.815, 0.092), unit * 0.028 * headScale, unit * 0.022 * headScale, hairColor);
+      } else if (facialHair === 'beard' || facialHair === 'fullBeard') {
+        line(target, hairColor, unit * (facialHair === 'fullBeard' ? 0.042 : 0.025) * headScale, headPt(-0.051, 1.843, 0.087), headPt(0, 1.818, 0.086), headPt(0.051, 1.843, 0.087));
+      } else if (facialHair === 'stubble') {
+        line(target, colors(skin)[2], unit * 0.018 * headScale, headPt(-0.048, 1.843, 0.087), headPt(0, 1.821, 0.086), headPt(0.048, 1.843, 0.087));
+      }
     }
-    if (detail && hash % 11 === 0) line(target, strip, unit * 0.02, upper(-0.088, 1.954, 0.022), upper(0, 1.948, 0.083), upper(0.088, 1.954, 0.022));
+    if (detail && headband) line(target, strip, unit * 0.021 * headScale, headPt(-0.088, 1.954, 0.022), headPt(0, 1.948, 0.083), headPt(0.088, 1.954, 0.022));
     picks.push({ id: player.id, x: (ground.x + head.x) / 2, y: (ground.y + head.y) / 2, radius: Math.max(11 * ratio, size * 0.55) });
   }
 

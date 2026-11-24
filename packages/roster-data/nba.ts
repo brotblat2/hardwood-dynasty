@@ -2,12 +2,13 @@ import type { Player, Position, Team } from '../contracts/index.ts';
 import { estimateStrength } from './body.ts';
 import { validateRoster } from './index.ts';
 import type { RosterPack } from './index.ts';
+import { lookupNbaLikeness, lookupTeamBranding } from './likeness.ts';
 import { gradeNbaPlayer } from './ratings.ts';
 import type { NbaGrade, SeasonLine } from './ratings.ts';
 import bios from './data/nba-rosters.json' with { type: 'json' };
 import stats from './data/nba-season-stats.json' with { type: 'json' };
 
-export const NBA_MODEL_VERSION = 2;
+export const NBA_MODEL_VERSION = 3;
 const source = 'ESPN player bios · BoxScore Lab season data';
 const seasonLines = stats.players as Record<string, SeasonLine[]>;
 const espnIds = stats.espnIds as Record<string, string>;
@@ -78,16 +79,22 @@ function convertRoster(data: BioTeam, ids: Set<string>, omissions: string[]): Te
     const position = playerPosition(athlete.position, height, season);
     const playerGrade = gradeNbaPlayer(position, season, age);
     const number = Number(athlete.jersey);
+    const likeness = lookupNbaLikeness(name, position, height, id);
     roster.push({
       id: 'nba-' + id, name, number: Number.isInteger(number) && number >= 0 && number <= 99 ? number : 0,
-      age, height, weight, position, overall: playerGrade.overall, potential: playerGrade.potential,
+      age, height, weight, wingspan: likeness.wingspan, appearance: likeness.appearance,
+      position, overall: playerGrade.overall, potential: playerGrade.potential,
       ratings: { ...playerGrade.ratings, strength: estimateStrength(height, weight) }, gradeEvidence: playerGrade.evidence,
       salary: athlete.salary, years: athlete.yearsRemaining,
     });
   }
-  const color = team.color && /^[0-9a-f]{6}$/i.test(team.color) ? '#' + team.color : '#17408b';
-  return { id: team.abbreviation.toLowerCase(), city: team.location, name: team.name, abbreviation: team.abbreviation,
-    conference, color, accent: '#efeadf', roster: startersFirst(roster) };
+  const fallbackColor = team.color && /^[0-9a-f]{6}$/i.test(team.color) ? '#' + team.color : '#17408b';
+  const branding = lookupTeamBranding(team.abbreviation, fallbackColor);
+  return {
+    id: team.abbreviation.toLowerCase(), city: team.location, name: team.name, abbreviation: team.abbreviation,
+    conference, color: branding.primary, accent: branding.accent, tertiaryColor: branding.tertiary,
+    jerseyPattern: branding.pattern, roster: startersFirst(roster),
+  };
 }
 
 /** The checked-in snapshot makes all teams selectable in a fresh browser without external fetches. */

@@ -1,4 +1,4 @@
-import type { Player, Position, Ratings, Team } from '../contracts/index.ts';
+import type { Player, PlayerAppearance, Position, Ratings, Team } from '../contracts/index.ts';
 import { estimateStrength } from '../roster-data/body.ts';
 
 export type Archetype = 'Sharpshooter' | 'Slasher' | 'Playmaker' | 'Anchor' | 'Two-way wing' | 'Stretch big' | 'Post scorer' | 'Three-level scorer';
@@ -28,10 +28,11 @@ const boosts: Record<Archetype, Partial<Ratings>> = {
   'Post scorer': { finishing: 16, interior: 8, rebounding: 5, perimeter: -5 },
   'Three-level scorer': { shooting: 11, finishing: 12, handling: 5, passing: -3 }
 };
-export function createCareer(input: { name: string; position: Position; height: number; weight?: number; archetype: Archetype; path: CareerPath; seed?: number }): Career {
+export function createCareer(input: { name: string; position: Position; height: number; weight?: number; wingspan?: number; appearance?: PlayerAppearance; archetype: Archetype; path: CareerPath; seed?: number }): Career {
   const seed = input.seed ?? 1;
   const height = clamp(input.height, 1.68, 2.24);
   const weight = clamp(input.weight ?? (88 + (height - 1.9) * 65), 60, 145);
+  const wingspan = typeof input.wingspan === 'number' && Number.isFinite(input.wingspan) ? clamp(input.wingspan, 1.55, 2.5) : undefined;
   const size = Math.round((height - 1.95) * 25);
   const role = ['PG','SG','SF','PF','C'].indexOf(input.position) - 2;
   const ratings: Ratings = {
@@ -43,7 +44,10 @@ export function createCareer(input: { name: string; position: Position; height: 
   if (input.path === 'International') ratings.passing += 3;
   else ratings.perimeter += 3;
   const player: Player = { id: 'career-' + (seed >>> 0), name: input.name.trim() || 'Jordan Ellis', number: 12,
-    position: input.position, height, weight, age: input.path === 'College' ? 20 : 19, overall: overall(ratings), potential: 92, ratings };
+    position: input.position, height, weight,
+    ...(wingspan !== undefined ? { wingspan } : {}),
+    ...(input.appearance ? { appearance: input.appearance } : {}),
+    age: input.path === 'College' ? 20 : 19, overall: overall(ratings), potential: 92, ratings };
   return { version: 1, player, archetype: input.archetype, path: input.path, seed, stage: 'showcase',
     teamId: null, draftPick: null, xp: 0, trust: 35, chemistry: 40, games: 0, season: 1, draftStock: 36,
     showcase: null, lastGame: null, combine: null, totals: { points: 0, assists: 0, rebounds: 0, wins: 0 } };

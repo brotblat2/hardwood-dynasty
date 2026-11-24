@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import type { Difficulty, GameState, Player, Team } from '../../../packages/contracts/index.ts';
+import type { Difficulty, GameState, JerseyKit, Player, Team } from '../../../packages/contracts/index.ts';
+import { resolveKitPalette } from '../../../packages/rendering/jerseys.ts';
 import { demoTeams, bobovTeam, parseRosterCsv, validateRoster } from '../../../packages/roster-data/index.ts';
 import type { RosterPack } from '../../../packages/roster-data/index.ts';
 import { DEFAULT_KEYBOARD_BINDINGS, mergeBindings } from '../../../packages/controls/index.tsx';
@@ -13,7 +14,7 @@ const Match = lazy(() => import('./Match.tsx').then(module => ({ default: module
 
 type Page = 'home' | 'play' | 'franchise' | 'career' | 'online' | 'blacktop' | 'practice' | 'rosters' | 'settings';
 type Settings = { difficulty: Difficulty; quality: 'auto' | 'low' | 'high'; camera: Camera; novelty: boolean; server: string; keyboard?: KeyboardBindings; mute?: boolean };
-const defaults: Settings = { difficulty: 'Pro', quality: 'auto', camera: 'broadcast', novelty: false, server: '' };
+const defaults: Settings = { difficulty: 'Pro', quality: 'auto', camera: '2k', novelty: false, server: '' };
 const menu: { id: Exclude<Page, 'home'>; title: string }[] = [
   { id: 'play', title: 'Play Now' }, { id: 'franchise', title: 'Franchise' }, { id: 'career', title: 'MyPlayer' },
   { id: 'online', title: 'Online' }, { id: 'blacktop', title: 'Blacktop' }, { id: 'practice', title: 'Practice' },
@@ -184,24 +185,54 @@ function Setup({ mode, teams, settings, onStart }: { mode: 'play' | 'blacktop' |
   const [stays, setStays] = useState(false);
   const [scoring, setScoring] = useState(1);
   const [difficulty, setDifficulty] = useState(settings.difficulty);
+  const [homeKit, setHomeKit] = useState<JerseyKit>('home');
+  const [awayKit, setAwayKit] = useState<JerseyKit>('away');
   const home = teams.find(team => team.id === homeId) ?? teams[0];
   const away = teams.find(team => team.id === awayId) ?? teams[1];
+  const homeKitColors = resolveKitPalette(home, 0, homeKit);
+  const awayKitColors = resolveKitPalette(away, 1, awayKit, homeKitColors.base);
+  const kitOptions: { value: JerseyKit; label: string }[] = [
+    { value: 'home', label: 'Home' },
+    { value: 'away', label: 'Away' },
+    { value: 'statement', label: 'Statement' },
+    { value: 'city', label: 'City' },
+  ];
   return <>
     <PageHeading title={titleFor(mode)} subtitle={mode === 'play' ? 'Choose your matchup and quarter length.' : mode === 'blacktop' ? 'Set the lineup, court, and scoring rules.' : 'Get shots up and find your release timing.'} />
     <form className="panel setup-panel" onSubmit={event => {
       event.preventDefault();
       onStart({ teams: [home, away], config: {
-        mode: mode === 'play' ? 'regulation' : mode, difficulty, periodSeconds: period, periods,
+        mode: mode === 'play' ? 'regulation' : mode, difficulty, periodSeconds: period, periods, kits: [homeKit, awayKit],
         ...(mode === 'blacktop' ? { targetScore: target, playersPerTeam: players, halfCourt: half, makeItTakeIt: stays, scoring: { inside: scoring, outside: scoring + 1 } } : {}),
       } });
     }}>
       <div className="matchup">
         <div className="team-choice" style={{ '--team': home.color } as React.CSSProperties}><TeamChip team={home} /><h2>{home.name}</h2>
           <Field label="Your team"><select value={home.id} onChange={event => setHome(event.target.value)}>{teams.map(team => <option key={team.id} value={team.id} disabled={team.id === away.id}>{teamLabel(team)}</option>)}</select></Field>
+          <Field label="Jersey kit">
+            <div className="kit-row">
+              <select value={homeKit} onChange={event => setHomeKit(event.target.value as JerseyKit)}>
+                {kitOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+              </select>
+              <span className="kit-preview-badge" title={`${homeKitColors.wordmark} (${homeKitColors.kit})`} style={{ background: homeKitColors.base, color: homeKitColors.ink, borderColor: homeKitColors.accent }}>
+                {homeKitColors.wordmark.slice(0, 4)}
+              </span>
+            </div>
+          </Field>
         </div>
         <span className="versus">VS</span>
         <div className="team-choice away" style={{ '--team': away.color } as React.CSSProperties}><TeamChip team={away} /><h2>{away.name}</h2>
           <Field label="Opponent"><select value={away.id} onChange={event => setAway(event.target.value)}>{teams.map(team => <option key={team.id} value={team.id} disabled={team.id === home.id}>{teamLabel(team)}</option>)}</select></Field>
+          <Field label="Jersey kit">
+            <div className="kit-row">
+              <select value={awayKit} onChange={event => setAwayKit(event.target.value as JerseyKit)}>
+                {kitOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+              </select>
+              <span className="kit-preview-badge" title={`${awayKitColors.wordmark} (${awayKitColors.kit}${awayKitColors.kit !== awayKit ? ' - clash adjusted' : ''})`} style={{ background: awayKitColors.base, color: awayKitColors.ink, borderColor: awayKitColors.accent }}>
+                {awayKitColors.wordmark.slice(0, 4)}
+              </span>
+            </div>
+          </Field>
         </div>
       </div>
       <div className="settings-row">
@@ -352,7 +383,13 @@ function PlayerCard({ player, close }: { player: Player; close(): void }) {
   const evidence = player.gradeEvidence === 'established' ? 'Stats-based rating' : player.gradeEvidence === 'limited' ? 'Limited NBA sample' : player.gradeEvidence === 'estimated' ? 'Provisional rating' : undefined;
   return <div className="player-card-overlay" onClick={close}>
     <section className="panel player-card" role="dialog" aria-modal="true" aria-label={player.name + ' ratings'} onClick={event => event.stopPropagation()}>
-      <div className="panel-head"><div><h2>{player.name}</h2><p>#{player.number} · {player.position} · {heightLabel(player.height)} · {weightLabel(player.weight)}</p></div>
+      <div className="panel-head"><div><h2>{player.name}</h2><p>#{player.number} · {player.position} · {heightLabel(player.height)}{player.wingspan ? ` · Span ${heightLabel(player.wingspan)}` : ''} · {weightLabel(player.weight)}</p>
+        {player.appearance && <p className="player-bio-look">
+          {player.appearance.skinTone && <i className="bio-tone-dot" style={{ background: player.appearance.skinTone }} />}
+          <span>{player.appearance.hairstyle ? player.appearance.hairstyle.replace(/([A-Z])/g, ' $1').replace(/^./, (c: string) => c.toUpperCase()) : 'Classic'}</span>
+          {player.appearance.facialHair && player.appearance.facialHair !== 'none' && <span> · {player.appearance.facialHair.replace(/([A-Z])/g, ' $1').replace(/^./, (c: string) => c.toUpperCase())}</span>}
+        </p>}
+      </div>
         <button className="button" onClick={close} autoFocus>Close</button></div>
       <div className="form-panel">
         <div className="metric-strip mini"><div className="metric"><span>Overall</span><strong>{player.overall}</strong></div><div className="metric"><span>Potential</span><strong>{player.potential}</strong></div><div className="metric"><span>Est. strength</span><strong>{player.ratings.strength ?? '—'}</strong></div></div>
@@ -367,9 +404,9 @@ function PlayerCard({ player, close }: { player: Player; close(): void }) {
 
 const keyboardLabels: Record<keyof KeyboardBindings, string> = {
   up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
-  shoot: 'Shoot', pumpFake: 'Pump fake', pass: 'Pass', bouncePass: 'Bounce pass', lobPass: 'Lob pass',
-  iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Contest', steal: 'Steal', screen: 'Screen / pick',
-  dribble: 'Dribble move', intenseD: 'Intense-D (Clamp)', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
+  shoot: 'Shoot / Block / Rebound', pumpFake: 'Pump fake', pass: 'Pass / Switch (Def)', bouncePass: 'Bounce pass', lobPass: 'Lob pass',
+  iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Contest', steal: 'Steal', screen: 'Call Screen / Box Out',
+  dribble: 'Dribble / Steal (Def)', intenseD: 'Post-Up / Tight D', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
 };
 export const keyName = (key: string) => key.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, 'Arrow ');
 

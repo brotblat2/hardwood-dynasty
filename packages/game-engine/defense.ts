@@ -51,6 +51,7 @@ export function evaluateSteal(
   dribble: DribbleRuntime | undefined,
   tick: number,
   random: () => number,
+  postUp = false,
 ): StealOutcome {
   const roll = random();
   const ballDist = distance(defender.position, ballPos);
@@ -61,15 +62,15 @@ export function evaluateSteal(
   const midCross = active?.type === 'crossover' && progress > 0.25 && progress < 0.72;
   const protectedMove = active?.type === 'behindBack' || active?.type === 'betweenLegs' || active?.type === 'spin';
 
-  const skill = (defender.profile.ratings.perimeter - owner.profile.ratings.handling) * 0.004;
+  const skill = (defender.profile.ratings.perimeter - owner.profile.ratings.handling) * 0.008;
   const reach = clamp((1.25 - ballDist) * 0.15, -0.09, 0.08);
   const stealChance = clamp(
-    0.24 + skill + reach + (ballExposed ? 0.07 : -0.08) + (midCross ? 0.13 : 0) - (protectedMove ? 0.14 : 0),
-    0.04,
-    0.52,
+    0.16 + skill + reach + (ballExposed ? 0.06 : -0.06) + (midCross ? 0.12 : 0) - (protectedMove || postUp ? 0.14 : 0),
+    0.03,
+    0.48,
   );
-  const pokeChance = clamp(stealChance + (ballExposed ? 0.14 : 0.08), stealChance, 0.66);
-  const foulThreshold = ballExposed ? 0.935 : 0.87;
+  const pokeChance = clamp(stealChance + (ballExposed ? 0.10 : 0.06), stealChance, 0.60);
+  const foulThreshold = postUp ? 0.78 : ballExposed ? 0.91 : 0.84;
 
   if (roll < stealChance) return 'steal';
   if (roll < pokeChance) return 'poke';

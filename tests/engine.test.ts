@@ -488,3 +488,88 @@ test('3D contestPct, stepBack rhythm & euro styles, jumpHeight, and JSON replay 
   assert.equal(euroGame.state.shotFeedback?.style, 'Euro step');
   assert.deepEqual(cloned.state, euroGame.state);
 });
+
+test('2K15 braking stops fast, driving gather carries toward rim, postUp shields ball & shoots post move, hotStreak & replay determinism', () => {
+  // 1. Crisp athletic braking on neutral stick release
+  const brakeGame = engine({ playersPerTeam: 1, seed: 4 });
+  const [sprinter] = brakeGame.state.players;
+  sprinter.position = { x: 2, z: 0 };
+  for (let i = 0; i < 14; i++) brakeGame.step({ [sprinter.id]: { move: { x: 1, z: 0 }, sprint: true } });
+  const peakSpeed = Math.hypot(sprinter.velocity.x, sprinter.velocity.z);
+  assert.ok(peakSpeed > 4.5);
+  for (let i = 0; i < 6; i++) brakeGame.step({ [sprinter.id]: { move: { x: 0, z: 0 } } });
+  const stoppedSpeed = Math.hypot(sprinter.velocity.x, sprinter.velocity.z);
+  assert.ok(stoppedSpeed < peakSpeed * 0.25, `expected crisp braking from ${peakSpeed.toFixed(2)}, got ${stoppedSpeed.toFixed(2)}`);
+
+  // 2. Driving gather carries handler toward rim during layup/dunk launch
+  const driveGame = engine({ playersPerTeam: 1, seed: 6 });
+  const [driver, rimDef] = driveGame.state.players;
+  driver.position = { x: 8.8, z: 0.3 };
+  rimDef.position = { x: -10, z: -5 };
+  for (let i = 0; i < 8; i++) driveGame.step({ [driver.id]: { move: { x: 1, z: 0 }, sprint: true } });
+  const gatherStartX = driver.position.x;
+  for (let i = 0; i < 10; i++) driveGame.step({ [driver.id]: { move: { x: 1, z: 0 }, sprint: true, shoot: true } });
+  assert.ok(driver.position.x > gatherStartX + 0.35, 'driving gather carries momentum toward rim');
+  for (let i = 0; i < 30; i++) driveGame.step({ [driver.id]: { move: { x: 1, z: 0 }, shoot: true } });
+  driveGame.step();
+  assert.match(driveGame.state.shotFeedback?.style ?? '', /layup|dunk|floater|runner/i);
+
+  // 3. Post-up backs away from rim, holds 'postUp' pose, survives JSON replay, and fires post shot
+  const postGame = engine({ playersPerTeam: 1, seed: 8 });
+  const [poster, postDef] = postGame.state.players;
+  poster.position = { x: 9.8, z: 1.4 };
+  postDef.position = { x: 11.1, z: 0.9 };
+  for (let i = 0; i < 6; i++) {
+    postGame.step({ [poster.id]: { move: { x: 0.5, z: -0.2 }, postUp: true }, [postDef.id]: { move: { x: 0, z: 0 }, intenseD: true } });
+  }
+  assert.equal(poster.pose, 'postUp');
+  assert.equal(poster.action?.postUp, true);
+  assert.ok(Math.cos(poster.facing) < 0, 'post-up player turns back toward attacking hoop');
+
+  const postClone = createEngine(teams, { playersPerTeam: 1, seed: 8 }, JSON.parse(JSON.stringify(postGame.state)));
+  for (let i = 0; i < 36; i++) {
+    const inp = { [poster.id]: { move: { x: 0.3, z: 0 }, postUp: true, shoot: true } };
+    postGame.step(inp);
+    postClone.step(inp);
+  }
+  postGame.step();
+  postClone.step();
+  assert.deepEqual(postClone.state, postGame.state);
+  assert.match(postGame.state.shotFeedback?.style ?? '', /hook|fadeaway|post/i);
+
+  // 4. Consecutive makes trigger hotStreak >= 2
+  const streakGame = engine({ playersPerTeam: 1, mode: 'practice', seed: 2 });
+  const [hotShooter] = streakGame.state.players;
+  for (let attempt = 0; attempt < 3 && (hotShooter.action?.hotStreak ?? 0) < 2; attempt++) {
+    if (streakGame.state.ball.kind !== 'held' || streakGame.state.ball.ownerId !== hotShooter.id) {
+      streakGame.state.ball.kind = 'held';
+      streakGame.state.ball.ownerId = hotShooter.id;
+    }
+    hotShooter.position = { x: 11.4, z: 0 };
+    hotShooter.velocity = { x: 0, z: 0 };
+    for (let i = 0; i < 37; i++) streakGame.step({ [hotShooter.id]: { ...cmd, shoot: true } });
+    for (let i = 0; i < 120 && streakGame.state.score[0] < 4; i++) streakGame.step();
+  }
+  assert.ok(streakGame.state.score[0] >= 4, `expected at least 2 makes in practice, score=${streakGame.state.score[0]}`);
+  assert.ok((streakGame.state.players[0].action?.hotStreak ?? 0) >= 2, `expected hotStreak >= 2, got ${streakGame.state.players[0].action?.hotStreak}`);
+});
+
+test('driving layup/dunk keeps athletic momentum during gather and finishes cleanly on quick release (~0.42s)', () => {
+  const g = engine({ playersPerTeam: 1, mode: 'practice', seed: 11 });
+  const [driver] = g.state.players;
+  driver.profile.ratings.finishing = 90;
+  driver.position = { x: 8.6, z: 0 };
+  for (let i = 0; i < 10; i++) g.step({ [driver.id]: { move: { x: 1, z: 0 }, sprint: true } });
+  const gatherX = driver.position.x;
+  for (let i = 0; i < 25; i++) {
+    g.step({ [driver.id]: { move: { x: 1, z: 0 }, sprint: true, shoot: true } });
+    if (i === 12) {
+      assert.ok(Math.hypot(driver.velocity.x, driver.velocity.z) >= 2.6, 'driving gather keeps athletic speed toward rim');
+    }
+  }
+  assert.ok(driver.position.x > gatherX + 1.0, 'drive covers ground to the basket during gather');
+  g.step();
+  assert.match(g.state.shotFeedback?.style ?? '', /layup|dunk/i);
+  for (let i = 0; i < 70 && g.state.score[0] === 0; i++) g.step();
+  assert.equal(g.state.score[0], 2, 'quick-release uncontested driving finish converts cleanly');
+});

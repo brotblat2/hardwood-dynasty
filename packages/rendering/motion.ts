@@ -19,7 +19,7 @@ export function motionEvents(state: GameState) {
   return latest;
 }
 
-export function makeMotion(stature: number, thickness: number, hash: number) {
+export function makeMotion(stature: number, thickness: number, hash: number, armScale = 1) {
   const scale = stature / 2.02;
   const arms = [jointChain(), jointChain()];
   const legs = [jointChain(), jointChain()];
@@ -41,6 +41,7 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
   let flyBy = 0;
   let deadDribble = 0;
   let tripleThreat = 0;
+  let postUp = 0;
   let speed = 0;
   let wasContesting = false;
 
@@ -62,6 +63,7 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
       flyBy = 0;
       deadDribble = 0;
       tripleThreat = 0;
+      postUp = 0;
     }
     if (contesting && !wasContesting) lastContest = tick;
     wasContesting = contesting;
@@ -92,6 +94,7 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
     flyBy = lerp(flyBy, action?.flyBy ?? Number(player.pose === 'flyBy'), fast);
     deadDribble = lerp(deadDribble, Number(Boolean(held && (action?.deadDribble || action?.ballState === 'dead'))), fast);
     tripleThreat = lerp(tripleThreat, Number(Boolean(held && action?.ballState === 'tripleThreat' && !dm)), fast);
+    postUp = lerp(postUp, Number(player.pose === 'postUp' || action?.postUp), fast);
 
     const shot = event?.type === 'shot' && age < 0.53 ? clamp(1 - Math.max(0, age - 0.2) / 0.33, 0, 1) : 0;
     const activeShotStyle = action?.shotStyle ?? (
@@ -150,16 +153,16 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
     const euroWeave = euroShot ? Math.sin(gPhase * Math.PI * 2) * 0.24 : 0;
     const gatherDip = charge > 0 ? clamp(1 - Math.max(0, charge - 0.22) / 0.16, 0, 1) : 0;
     const crouch = movement * 0.09 + screen * 0.12 + gather * (1 - shot) * gatherDip * 0.14 +
-      slide * 0.10 + intenseD * 0.15 + bodyUp * 0.12 + pumpFake * 0.14 +
+      slide * 0.10 + intenseD * 0.15 + bodyUp * 0.12 + postUp * 0.16 + pumpFake * 0.14 +
       tripleThreat * 0.13 + deadDribble * 0.07 + stumble * 0.18 + moveCrouch;
     pose.rise = jump + moveRise + (0.008 + (1 - Math.cos(stride * 2)) * 0.023) * run;
     pose.crouch = crouch;
     pose.tilt = run * 0.15 + screen * 0.12 + gather * 0.08 + stealSwipe * 0.28 +
-      bodyUp * 0.18 + intenseD * 0.10 + flyBy * 0.42 + (dunk ? activeShot * 0.24 : 0) -
+      bodyUp * 0.18 + intenseD * 0.10 + postUp * 0.22 + flyBy * 0.42 + (dunk ? activeShot * 0.24 : 0) -
       (fadeOrStepBack ? activeShot * 0.36 : 0) + moveTilt + stumble * Math.cos(tick * 0.42) * 0.18;
     pose.roll = -lateral * run * 0.11 + Math.sin(stride) * run * 0.035 + moveRoll + euroWeave + stumble * Math.sin(tick * 0.55) * 0.34;
     pose.twist = Math.sin(stride) * 0.1 * run + stealSwipe * 0.35 +
-      (hookShot ? activeShot * 0.52 : highFinish ? shot * 0.19 : 0) + moveTwist + bodyUp * 0.14;
+      (hookShot ? activeShot * 0.52 : highFinish ? shot * 0.19 : 0) + moveTwist + bodyUp * 0.14 + postUp * 0.26;
 
     for (let i = 0; i < 2; i++) {
       const sign = i === 0 ? -1 : 1;
@@ -167,7 +170,7 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
       const swing = Math.sin(step) * run * 0.46;
       const lift = Math.max(0, Math.cos(step)) ** 1.5 * run * 0.26;
       const spacing = thickness * 0.143 + screen * 0.16 + slide * 0.14 + intenseD * 0.16 +
-        bodyUp * 0.12 + deadDribble * 0.08 + stumble * 0.18 + (dm === 'betweenLegs' ? moveArc * 0.15 : 0);
+        bodyUp * 0.12 + postUp * 0.17 + deadDribble * 0.08 + stumble * 0.18 + (dm === 'betweenLegs' ? moveArc * 0.15 : 0);
       const scissor = dm === 'betweenLegs' ? (sign === mDir ? 1 : -1) * moveArc * 0.36
         : dm === 'jab' && sign === mDir ? moveArc * 0.34
         : 0;
@@ -272,6 +275,23 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
       const endZ = dunk ? 0.34 : 0.22 + Math.min(age, 0.4) * 0.43;
       blend(arm.joint, sign * (highFinish ? 0.32 : 0.217) + hookOffset + offArmShield, i === 0 && highFinish ? 1.5 : 1.875, 0.2, shot);
       blend(arm.end, sign * (highFinish ? 0.31 : 0.131) + hookOffset + offArmShield, endY, endZ, shot);
+      if (postUp > 0.02) {
+        if (i === 0) {
+          blend(arm.joint, -0.38, 1.48 - crouch, -0.14, postUp);
+          blend(arm.end, -0.48, 1.44 - crouch, -0.24, postUp);
+        } else {
+          blend(arm.joint, 0.26, 1.40 - crouch, 0.18, postUp);
+          blend(arm.end, 0.16, 1.32 - crouch, 0.34, postUp);
+        }
+      }
+      if (armScale !== 1) {
+        arm.joint.x = shoulder + (arm.joint.x - shoulder) * armScale;
+        arm.joint.y = arm.start.y + (arm.joint.y - arm.start.y) * armScale;
+        arm.joint.z = arm.start.z + (arm.joint.z - arm.start.z) * armScale;
+        arm.end.x = shoulder + (arm.end.x - shoulder) * armScale;
+        arm.end.y = arm.start.y + (arm.end.y - arm.start.y) * armScale;
+        arm.end.z = arm.start.z + (arm.end.z - arm.start.z) * armScale;
+      }
       arm.pitch = -shot * 0.84 - passing * 0.86;
     }
     return pose;

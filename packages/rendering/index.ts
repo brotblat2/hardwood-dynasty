@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { TICK_RATE } from '../contracts/index.ts';
 import type { GameState, Team, Vec2, Vec3 } from '../contracts/index.ts';
 import { makeArena, makeHoops } from './arena.ts';
-import { makeBall, makeCourt, makeCourtTexture } from './court.ts';
+import { makeBall, makeCourt, makeCourtMaps, makeCourtTexture } from './court.ts';
 import { makePlayerFactory } from './player.ts';
+import { resolveKitPalette } from './jerseys.ts';
 import { courtMovement } from './input-view.ts';
 import { createCanvasFallback } from './fallback.ts';
 import { makeGameCamera } from './camera.ts';
@@ -37,9 +38,37 @@ function releaseScene(scene: THREE.Scene) {
   });
   for (const material of materials) {
     if ('map' in material && material.map instanceof THREE.Texture) material.map.dispose();
+    if ('bumpMap' in material && material.bumpMap instanceof THREE.Texture) material.bumpMap.dispose();
+    if ('roughnessMap' in material && material.roughnessMap instanceof THREE.Texture) material.roughnessMap.dispose();
     material.dispose();
   }
   for (const geometry of geometries) geometry.dispose();
+}
+
+function makeArenaEnvironment(webgl: THREE.WebGLRenderer, blacktop: boolean) {
+  const pmrem = new THREE.PMREMGenerator(webgl);
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(blacktop ? 0x3b5866 : 0x161f22);
+  const mats: THREE.Material[] = [];
+  const geos: THREE.BufferGeometry[] = [];
+  const addPanel = (color: number, w: number, h: number, y: number, rx: number, z = 0) => {
+    const geo = new THREE.PlaneGeometry(w, h);
+    const mat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(0, y, z);
+    mesh.rotation.x = rx;
+    envScene.add(mesh);
+    mats.push(mat);
+    geos.push(geo);
+  };
+  addPanel(blacktop ? 0xfff1da : 0xfff5e4, 24, 14, 12, Math.PI / 2);
+  addPanel(0x885c34, 24, 16, -6, -Math.PI / 2);
+  addPanel(blacktop ? 0x5c8aa4 : 0x36526c, 28, 7, 3, 0, -14);
+  const rt = pmrem.fromScene(envScene, 0.04);
+  for (const g of geos) g.dispose();
+  for (const m of mats) m.dispose();
+  pmrem.dispose();
+  return rt;
 }
 
 export function createRenderer(container: HTMLElement, options: RendererOptions = {}): GameRenderer {
@@ -54,9 +83,9 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   }
 
   webgl.outputColorSpace = THREE.SRGBColorSpace;
-  webgl.toneMapping = THREE.NeutralToneMapping;
-  webgl.toneMappingExposure = 0.94;
-  webgl.shadowMap.type = THREE.PCFShadowMap;
+  webgl.toneMapping = THREE.ACESFilmicToneMapping;
+  webgl.toneMappingExposure = 1.04;
+  webgl.shadowMap.type = THREE.PCFSoftShadowMap;
   const element = webgl.domElement;
   element.style.display = 'block';
   element.style.width = '100%';
@@ -77,6 +106,11 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   let lastFrame = 0;
   let lastCrowdDraw = -Infinity;
   let floorKey: string | undefined;
+  let envKey: string | undefined;
+  let envRT: THREE.WebGLRenderTarget | undefined;
+  let kitSignature = '';
+  let cachedKitQuery = '';
+  let cachedPalettes: [ReturnType<typeof resolveKitPalette>, ReturnType<typeof resolveKitPalette>] | undefined;
   let lastWidth = 0;
   let lastHeight = 0;
   let lastRatio = 0;
@@ -85,9 +119,9 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   const ballAxis = new THREE.Vector3();
   const ballTurn = new THREE.Quaternion();
 
-  const ambient = new THREE.HemisphereLight(0xffecd2, 0x61777b, 1.52);
+  const ambient = new THREE.HemisphereLight(0xffecd2, 0x5c7278, 1.38);
   scene.add(ambient);
-  const key = new THREE.DirectionalLight(0xfff0df, 2.55);
+  const key = new THREE.DirectionalLight(0xfff0df, 2.75);
   key.position.set(-6.4, 16, 8);
   key.castShadow = true;
   key.shadow.camera.left = -17;
@@ -96,24 +130,27 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   key.shadow.camera.bottom = -11;
   key.shadow.camera.near = 0.2;
   key.shadow.camera.far = 33;
-  key.shadow.mapSize.set(1536, 1536);
+  key.shadow.mapSize.set(1024, 1024);
   key.shadow.normalBias = 0.018;
   key.shadow.bias = -0.00007;
   key.shadow.radius = 2;
-  const fill = new THREE.DirectionalLight(0xdbeeff, 1.24);
+  const fill = new THREE.DirectionalLight(0xdbeeff, 1.18);
   fill.position.set(7, 9, -12);
-  const bounce = new THREE.DirectionalLight(0xffd69a, 0.26);
+  const rimLight = new THREE.DirectionalLight(0xc8e4ff, 1.05);
+  rimLight.position.set(0, 11, -13);
+  const bounce = new THREE.DirectionalLight(0xffd69a, 0.28);
   bounce.position.set(2.3, -4.2, 7);
-  scene.add(key, fill, bounce);
+  scene.add(key, fill, rimLight, bounce);
 
   const arena = makeArena();
   const court = makeCourt();
   const hoops = makeHoops();
   const anisotropy = Math.min(8, webgl.capabilities.getMaxAnisotropy());
   const ball = makeBall(anisotropy);
-  const factories = makePlayerFactory();
+  const factories = makePlayerFactory(anisotropy);
   const players = new Map<string, ReturnType<typeof factories.build>>();
   const textures = new Map<string, THREE.Texture>();
+  const courtMapsCache = new Map<string, { bumpMap: THREE.Texture; roughnessMap: THREE.Texture }>();
   const samples = new Map<string, PickTarget>();
   const projectedFeet = new THREE.Vector3();
   const projectedHead = new THREE.Vector3();
@@ -153,6 +190,12 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   function setQuality(next: Quality) {
     quality = next;
     webgl.shadowMap.enabled = quality === 'high';
+    const size = 1024;
+    if (key.shadow.mapSize.x !== size) {
+      key.shadow.mapSize.set(size, size);
+      key.shadow.map?.dispose();
+      key.shadow.map = null;
+    }
   }
   setQuality(quality);
 
@@ -160,7 +203,7 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     const width = container.clientWidth;
     const height = container.clientHeight;
     if (width === 0 || height === 0) return false;
-    const ratio = Math.min(window.devicePixelRatio || 1, quality === 'high' ? 1.65 : 1);
+    const ratio = Math.min(window.devicePixelRatio || 1, quality === 'high' ? 1.25 : 1);
     if (width !== lastWidth || height !== lastHeight || ratio !== lastRatio) {
       webgl.setPixelRatio(ratio);
       webgl.setSize(width, height, false);
@@ -173,6 +216,13 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   }
 
   function setMode(blacktop: boolean, homeTeam?: Team) {
+    const nextEnvKey = blacktop ? 'blacktop' : 'indoor';
+    if (envKey !== nextEnvKey) {
+      envKey = nextEnvKey;
+      envRT?.dispose();
+      envRT = makeArenaEnvironment(webgl, blacktop);
+      scene.environment = envRT.texture;
+    }
     const key = blacktop ? 'blacktop' : `team:${homeTeam?.id ?? 'default'}`;
     if (floorKey === key) return;
     floorKey = key;
@@ -186,9 +236,14 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     ambient.color.set(blacktop ? 0xd0edff : 0xffecd2);
     keyLight(blacktop);
     if (!textures.has(key)) textures.set(key, makeCourtTexture(blacktop, anisotropy, homeTeam));
-    court.material.roughness = blacktop ? 0.82 : 0.39;
-    court.material.clearcoat = blacktop ? 0 : 0.46;
+    const parquet = !blacktop && homeTeam?.abbreviation.toUpperCase() === 'BOS';
+    const mapsKey = blacktop ? 'blacktop' : parquet ? 'parquet' : 'maple';
+    if (!courtMapsCache.has(mapsKey)) courtMapsCache.set(mapsKey, makeCourtMaps(blacktop, anisotropy, parquet));
+    const maps = courtMapsCache.get(mapsKey)!;
+    court.material.roughness = blacktop ? 0.86 : 0.34;
     court.material.map = textures.get(key)!;
+    court.material.bumpMap = maps.bumpMap;
+    court.material.roughnessMap = maps.roughnessMap;
     court.material.needsUpdate = true;
   }
 
@@ -202,11 +257,30 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     const dt = Math.min(0.1, time - lastFrame);
     lastFrame = time;
     setMode(state.config.mode === 'blacktop', state.teams[0]);
-    if (time - lastCrowdDraw > (quality === 'high' ? 0.076 : 0.16)) {
-      const score = state.events.findLast((event) => event.type === 'score');
-      const cheer = score ? Math.max(0, 1 - (state.tick - score.tick) / (2.3 * TICK_RATE)) : 0;
-      arena.animate(time, cheer);
+    const score = state.events.findLast((event) => event.type === 'score');
+    const cheer = score ? Math.max(0, 1 - (state.tick - score.tick) / (2.3 * TICK_RATE)) : 0;
+    const crowdInterval = cheer > 0.02 ? 0.075 : (quality === 'high' ? 0.18 : 0.32);
+    if (time - lastCrowdDraw > crowdInterval) {
+      arena.animate(time, cheer, state);
       lastCrowdDraw = time;
+    }
+
+    const kitQuery = `${state.teams[0].id}:${state.teams[1].id}:${state.config.kits?.[0] ?? ''}:${state.config.kits?.[1] ?? ''}`;
+    if (kitQuery !== cachedKitQuery || !cachedPalettes) {
+      cachedKitQuery = kitQuery;
+      const homeP = resolveKitPalette(state.teams[0], 0, state.config.kits?.[0]);
+      const awayP = resolveKitPalette(state.teams[1], 1, state.config.kits?.[1], homeP.base);
+      cachedPalettes = [homeP, awayP];
+    }
+    const [homePalette, awayPalette] = cachedPalettes;
+    const nextKitSig = `${homePalette.base}:${awayPalette.base}:${state.teams[0].id}:${state.teams[1].id}`;
+    if (nextKitSig !== kitSignature) {
+      kitSignature = nextKitSig;
+      for (const actor of players.values()) {
+        actor.root.removeFromParent();
+        actor.dispose();
+      }
+      players.clear();
     }
 
     placeCamera(state, cameraMode, selectedId, dt);
@@ -218,7 +292,7 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
       activeIds.add(player.id);
       let actor = players.get(player.id);
       if (!actor) {
-        actor = factories.build(player, state.teams[player.side]);
+        actor = factories.build(player, state.teams[player.side], player.side === 0 ? homePalette : awayPalette);
         players.set(player.id, actor);
         scene.add(actor.root);
       }
@@ -332,8 +406,16 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     }
     players.clear();
     factories.dispose();
+    scene.environment = null;
+    envRT?.dispose();
     court.material.map = null;
+    court.material.bumpMap = null;
+    court.material.roughnessMap = null;
     for (const texture of textures.values()) texture.dispose();
+    for (const maps of courtMapsCache.values()) {
+      maps.bumpMap.dispose();
+      maps.roughnessMap.dispose();
+    }
     key.shadow.dispose();
     releaseScene(scene);
     webgl.dispose();

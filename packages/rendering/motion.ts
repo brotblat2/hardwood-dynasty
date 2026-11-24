@@ -94,7 +94,7 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
     flyBy = lerp(flyBy, action?.flyBy ?? Number(player.pose === 'flyBy'), fast);
     deadDribble = lerp(deadDribble, Number(Boolean(held && (action?.deadDribble || action?.ballState === 'dead'))), fast);
     tripleThreat = lerp(tripleThreat, Number(Boolean(held && action?.ballState === 'tripleThreat' && !dm)), fast);
-    postUp = lerp(postUp, Number(player.pose === 'postUp' || action?.postUp), fast);
+    postUp = lerp(postUp, Number(Boolean(player.pose === 'postUp' || action?.postUp)), fast);
 
     const shot = event?.type === 'shot' && age < 0.53 ? clamp(1 - Math.max(0, age - 0.2) / 0.33, 0, 1) : 0;
     const activeShotStyle = action?.shotStyle ?? (

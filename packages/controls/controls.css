@@ -13,7 +13,7 @@
   -webkit-user-select: none;
 }
 
-@media (any-pointer: coarse) {
+@media (pointer: coarse) and (hover: none) {
   .hd-touch-controls {
     display: flex;
   }

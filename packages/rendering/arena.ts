@@ -440,20 +440,6 @@ export function makeArena() {
     box(indoor, bannerMat, [1.25, 2.0, 0.04], x, 9.1, -15.6);
     box(indoor, goldTrim, [1.25, 0.14, 0.05], x, 8.12, -15.6);
   }
-  const coneGeo = new THREE.CylinderGeometry(0.32, 3.3, 8.8, 16, 1, true);
-  const coneMat = new THREE.MeshBasicMaterial({
-    color: 0xfff2db,
-    transparent: true,
-    opacity: 0.028,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  for (const [cx, cz] of [[-7.2, -1.8], [7.2, -1.8], [-2.8, 1.2], [2.8, 1.2]]) {
-    const cone = new THREE.Mesh(coneGeo, coneMat);
-    cone.position.set(cx, 5.2, cz);
-    indoor.add(cone);
-  }
   const jumbotron = makeJumbotron(indoor);
   const crowd = makeCrowd(indoor);
 

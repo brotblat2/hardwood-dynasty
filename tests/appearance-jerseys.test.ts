@@ -12,6 +12,7 @@ import {
   SKIN_TONES,
 } from '../packages/rendering/appearance.ts';
 import { resolveKitPalette } from '../packages/rendering/jerseys.ts';
+import { makeMotion } from '../packages/rendering/motion.ts';
 import { loadNbaRosters } from '../packages/roster-data/nba.ts';
 
 const basePlayer = fixtureTeam('home').roster[0];
@@ -145,4 +146,32 @@ test('createCareer persists wingspan & appearance, and server validators accept 
 
   assert.equal(control({ move: { x: 0.4, z: -0.2 }, postUp: true }), true);
   assert.equal(control({ move: { x: 0, z: 0 }, postUp: 'yes' }), false);
+});
+
+test('makeMotion produces finite transforms without NaN across idle, dribble, postUp, and shoot states', () => {
+  const motion = makeMotion(2.01, 1, 7, 1.04);
+  const scenarios = [
+    { pose: 'idle' as const, action: undefined, held: undefined, charge: 0 },
+    { pose: 'dribble' as const, action: {}, held: { x: 1, y: 0.9, z: 0.3 }, charge: 0 },
+    { pose: 'postUp' as const, action: { postUp: true }, held: { x: 1, y: 1.0, z: 0.2 }, charge: 0 },
+    { pose: 'shoot' as const, action: { shotStyle: 'jump' as const }, held: { x: 0.5, y: 2.1, z: 0.1 }, charge: 0.5 },
+  ];
+  let tick = 1;
+  for (const s of scenarios) {
+    for (let i = 0; i < 4; i++) {
+      const pose = motion({
+        id: 'p1', profile: basePlayer, side: 0, position: { x: 1, z: 0 },
+        velocity: { x: 0.8, z: -0.2 }, facing: 0.25, stamina: 92, pose: s.pose,
+        ...(s.action ? { action: s.action } : {}),
+      }, tick++, s.held, s.charge, undefined);
+      for (const n of [pose.facing, pose.rise, pose.crouch, pose.tilt, pose.roll, pose.twist]) {
+        assert.ok(Number.isFinite(n), `expected finite scalar for pose ${s.pose}`);
+      }
+      for (const chain of [...pose.arms, ...pose.legs]) {
+        for (const n of [chain.pitch, chain.start.x, chain.start.y, chain.start.z, chain.joint.x, chain.joint.y, chain.joint.z, chain.end.x, chain.end.y, chain.end.z]) {
+          assert.ok(Number.isFinite(n), `expected finite limb coord for pose ${s.pose}`);
+        }
+      }
+    }
+  }
 });

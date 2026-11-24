@@ -103,6 +103,12 @@
   background: #fff5db;
 }
 
+.hd-touch-controls__action--intenseD[data-pressed='true'] {
+  color: #fff;
+  border-color: #7cc4ff;
+  background: rgb(32 95 168 / 88%);
+}
+
 .hd-touch-controls__action:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;

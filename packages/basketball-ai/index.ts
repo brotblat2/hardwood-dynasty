@@ -230,6 +230,7 @@ function defend(p: GamePlayer, owner: GamePlayer, rim: Vec2, state: GameState, l
   const onBall = p === defense.guard;
   const pressure = distance(p.position, owner.position);
   const zoneAnchor = defense.zoneAnchors.get(p.id);
+  const halfCourt = state.config.halfCourt ?? state.config.mode === 'blacktop';
   let target: Vec2;
   if (scheme === 'zone23' && zoneAnchor) {
     target = match && distance(match.position, zoneAnchor) < 2.4 ? mix(zoneAnchor, match.position, 0.65) : zoneAnchor;
@@ -252,13 +253,22 @@ function defend(p: GamePlayer, owner: GamePlayer, rim: Vec2, state: GameState, l
     else if (p === defense.helper) target = defense.helpSpot;
     if (p === defense.rotate && defense.exposed) target = mix(target, defense.exposed.position, 0.4 + level * 0.055);
   }
-  const readyToSteal = onBall && (owner.pose !== 'shoot' && (p.profile.ratings.perimeter + level * 3 > owner.profile.ratings.handling || pressure < 0.82));
-  const contesting = ((onBall || p === defense.helper || p.id === defense.dropId || (scheme === 'zone23' && pressure < 2.1)) &&
+  const sprinting = distance(p.position, target) > (p.id === defense.hedgeId ? 1.6 : 2.25);
+  const deadBonus = owner.action?.deadDribble ? 0.25 : 0;
+  const recklessMove = !!owner.action?.dribbleMove && p.profile.ratings.perimeter + level * 3 < owner.profile.ratings.handling;
+  const readyToSteal = onBall && owner.pose !== 'shoot' && !recklessMove &&
+    (p.profile.ratings.perimeter + level * 3 > owner.profile.ratings.handling || pressure < 0.82 || !!owner.action?.deadDribble);
+  const stealMod = Math.max(24, (owner.action?.deadDribble ? 78 : 112) - 9 * level);
+  const pumpFakeBite = owner.pose === 'pumpFake' && (onBall || p === defense.helper) && pressure < 1.95 &&
+    noise(p.id, state.tick >> 3, 7) < clamp(0.62 - level * 0.11, 0.08, 0.62);
+  const contesting = pumpFakeBite || ((onBall || p === defense.helper || p.id === defense.dropId || (scheme === 'zone23' && pressure < 2.1)) &&
     pressure < (owner.pose === 'shoot' ? 2.05 : 1.02) + level * 0.12);
   return {
-    move: move(p.position, target), sprint: distance(p.position, target) > (p.id === defense.hedgeId ? 1.6 : 2.25),
+    move: move(p.position, target),
+    sprint: sprinting,
+    intenseD: onBall && !sprinting && pressure < 2.35 && (halfCourt || owner.position.x * Math.sign(rim.x) > -1.0),
     contest: contesting,
-    steal: (lateFoul && pressure < 1.3) || (readyToSteal && pressure < 1.23 && state.tick % (112 - 9 * level) === Math.floor(noise(p.id, 3, 0) * 38)),
+    steal: (lateFoul && pressure < 1.3) || (readyToSteal && pressure < 1.23 + deadBonus && state.tick % stealMod === Math.floor(noise(p.id, 3, 0) * Math.min(38, stealMod))),
   };
 }
 
@@ -295,9 +305,12 @@ function shotType(owner: GamePlayer, rim: Vec2, foes: GamePlayer[]): Control['sh
   const range = distance(owner.position, rim);
   const { finishing, shooting, handling } = owner.profile.ratings;
   const space = closeout(owner.position, foes, 0);
-  if (range < 2.25) return finishing >= 89 && space > 1.35 && owner.profile.height >= 1.92 ? 'dunk' : 'layup';
+  if (range < 2.25 && finishing >= 89 && space > 1.35 && owner.profile.height >= 1.92) return 'dunk';
+  if (range >= 1.9 && range < 3.6 && !big(owner) && finishing >= 83 && handling >= 80 && space < 1.75) return 'euro';
+  if (range < 2.25) return 'layup';
   if (range < 3.75 && big(owner) && space < 2.2) return 'hook';
   if (range < 3.9 && !big(owner) && space < 2.3) return 'floater';
+  if ((owner.action?.dribbleMove === 'stepBack' || (shooting >= 84 && range >= 5.4 && range < 8.6 && space >= 0.85 && space < 1.75)) && handling >= 75) return 'stepBack';
   if (range < 5.7 && !big(owner) && finishing > shooting + 4 && handling >= 86 && space < 2.3) return 'fadeaway';
   return 'jump';
 }
@@ -470,9 +483,18 @@ export function createCoach() {
           if (!c.pass && release < 0) {
             c.move = move(p.position, target);
             c.sprint = range > 9.2 && p.stamina > 24;
-            c.dribble = (level >= 2 && p.profile.ratings.handling >= 80 && space < 1.35 && range > 3.2 && range < 8.5)
+            const wantsDribble = (level >= 2 && p.profile.ratings.handling >= 80 && space < 1.35 && range > 3.2 && range < 8.5)
               ? (state.tick + Math.floor(noise(p.id, seed, 1) * 40)) % 45 === 0
               : space < 1.5 && p.stamina > 17;
+            c.dribble = wantsDribble;
+            if (wantsDribble) {
+              if (p.profile.ratings.shooting >= 82 && range >= 5.2 && range < 8.4 && space < 1.65) {
+                c.dribbleDir = { x: -sign, z: 0 };
+              } else if (p.profile.ratings.handling >= 80 && range >= 2.8 && range < 6.8) {
+                const sideZ = Math.abs(target.z - p.position.z) > 0.15 ? Math.sign(target.z - p.position.z) : (p.position.z >= 0 ? -1 : 1);
+                c.dribbleDir = { x: sign * 0.25, z: sideZ };
+              }
+            }
           } else if (release >= 0) {
             c.shoot = state.tick < release;
             c.shotType = attempt;

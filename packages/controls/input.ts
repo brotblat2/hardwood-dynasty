@@ -24,6 +24,7 @@ export const DEFAULT_KEYBOARD_BINDINGS = {
   steal: ['KeyX'],
   screen: ['KeyE'],
   dribble: ['KeyF'],
+  intenseD: ['KeyZ'],
   switchPlayer: ['KeyQ'],
   pumpFake: ['KeyV'],
   iconPass: ['Tab'],
@@ -78,8 +79,9 @@ export function formatKeyboardHints(bindings: Partial<KeyboardBindings> = DEFAUL
     ['Bounce pass', formatKeys(b.bouncePass)],
     ['Lob / Alley-oop', formatKeys(b.lobPass)],
     ['Icon pass', `${formatKeys(b.iconPass)}, then 1–4`],
-    ['Dribble / Step-back', formatKeys(b.dribble)],
+    ['Dribble / Step-back', `${formatKeys(b.dribble)} (aim with move)`],
     ['Call screen / Set screen', formatKeys(b.screen)],
+    ['Intense-D (Clamp)', formatKeys(b.intenseD)],
     ['Contest / Rebound', formatKeys(b.contest)],
     ['Steal / Deflect', formatKeys(b.steal)],
     ['Switch player', formatKeys(b.switchPlayer)],
@@ -91,13 +93,15 @@ export const KEYBOARD_HINTS = [
   ['Move', 'WASD or arrows'], ['Sprint', 'Shift'], ['Shoot', 'Hold and release Space'],
   ['Pump fake', 'V'], ['Pass', 'J, aim with movement'], ['Bounce pass', 'K'],
   ['Lob / Alley-oop', 'L'], ['Icon pass', 'Tab, then 1–4'],
-  ['Contest / rebound', 'C'], ['Steal', 'X'], ['Switch player', 'Q'],
-  ['Screen / call pick', 'E'], ['Dribble move', 'F'], ['Play / scheme', 'R'],
+  ['Contest / rebound', 'C'], ['Steal', 'X'], ['Intense-D (Clamp)', 'Z'],
+  ['Switch player', 'Q'], ['Screen / call pick', 'E'],
+  ['Dribble / Step-back', 'F (aim with move)'], ['Play / scheme', 'R'],
 ] as const;
 
 export const GAMEPAD_HINTS = [
   ['Move', 'Left stick or D-pad'], ['Sprint', 'RT / R2'], ['Shoot / Pro-Stick', 'Hold X / Square or Right Stick'],
   ['Pass', 'A / Cross, aim with either stick'], ['Bounce pass', 'LT / L2 + pass'], ['Lob / Alley-oop', 'Left stick click + pass'],
+  ['Intense-D (Clamp)', 'LT / L2 (on defense)'],
   ['Contest / rebound', 'Y / Triangle'], ['Steal / Pump fake', 'B / Circle'], ['Switch player', 'LB / L1'],
   ['Screen / call pick', 'RB / R1'], ['Dribble move', 'Flick Right Stick or R3'], ['Play / scheme', 'Start / Menu'],
 ] as const;
@@ -137,6 +141,7 @@ function gamepadSource(gamepad?: GamepadInput): Source {
     steal: button(1),
     screen: button(5),
     dribble: button(11),
+    intenseD: !pass && button(6),
     switchPlayer: button(4),
     iconPass: button(8),
     callPlay: button(9),
@@ -197,22 +202,26 @@ export function deriveShotType(
   const dist = Math.hypot(toRimX, toRimZ);
   const dirLen = Math.hypot(dir.x, dir.z);
   const toward = dist > 0.01 && dirLen > 0.15 ? (toRimX * dir.x + toRimZ * dir.z) / (dist * dirLen) : 0;
+  const lateral = dist > 0.01 && dirLen > 0.15 ? (toRimX * dir.z - toRimZ * dir.x) / (dist * dirLen) : 0;
   const isBig = player.profile.position === 'PF' || player.profile.position === 'C';
   if (options.proStickCourt) {
     if (toward > 0.45) return dist < 2.8 && options.sprint ? 'dunk' : dist < 3.4 ? 'layup' : 'floater';
     if (toward < -0.45) return 'fadeaway';
+    if (dist < 3.8 && options.dribble && Math.abs(lateral) > 0.55) return 'euro';
     return isBig ? 'hook' : 'floater';
   }
+  if (options.dribble && dist < 3.8 && Math.abs(lateral) > 0.45 && toward > 0.15) return 'euro';
   if (options.dribble && dist < 5.5) return isBig ? 'hook' : 'floater';
   if (dist < 2.6 && options.sprint && toward > 0.25) return 'dunk';
   if (dist < 2.7 && toward > 0.25) return 'layup';
+  if (dist >= 2.0 && dist < 3.8 && !options.sprint && toward > 0.15 && Math.abs(lateral) > 0.65) return 'euro';
   if (dist >= 2.6 && toward < -0.5) return 'fadeaway';
   return undefined;
 }
 
 const passActions = ['lobPass', 'bouncePass', 'pass'] as const;
 type PassAction = (typeof passActions)[number];
-const heldActions = ['sprint', 'contest', 'steal', 'screen', 'dribble'] as const;
+const heldActions = ['sprint', 'contest', 'steal', 'screen', 'dribble', 'intenseD'] as const;
 const tapActions = ['switchPlayer', 'pumpFake', 'iconPass', 'callPlay'] as const;
 const bufferedActions = [...passActions, ...tapActions, ...heldActions] as const;
 type BufferedAction = (typeof bufferedActions)[number];
@@ -235,6 +244,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
   let pad = gamepadSource();
   let stickHoldTicks = 0;
   let stickPeak = 0;
+  let stickPeakDir = STILL;
   let proStickShooting = false;
   let proStickDir = STILL;
 
@@ -278,20 +288,25 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       if (!nextPad.down('pass') && !rawButtonShoot) {
         if (rightMag >= 0.58) {
           stickHoldTicks++;
-          stickPeak = Math.max(stickPeak, rightMag);
+          if (rightMag >= stickPeak) {
+            stickPeak = rightMag;
+            stickPeakDir = nextPad.aim;
+          }
           proStickDir = nextPad.aim;
           if (stickHoldTicks >= 6) proStickShooting = true;
         } else {
           if (stickPeak >= 0.62 && rightMag < 0.28 && stickHoldTicks > 0 && stickHoldTicks < 6) {
-            presses.push({ action: 'dribble' });
+            presses.push({ action: 'dribble', aim: stickPeakDir });
           }
           stickHoldTicks = 0;
           stickPeak = 0;
+          stickPeakDir = STILL;
           proStickShooting = false;
         }
       } else {
         stickHoldTicks = 0;
         stickPeak = 0;
+        stickPeakDir = STILL;
         proStickShooting = false;
       }
     });
@@ -312,7 +327,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       const wasDown = touchDown(action);
       changeShoot(() => { touchActions.set(pointer, press); }, press);
       if (action !== 'shoot' && !wasDown) {
-        const aim = isPassAction(action) ? aimForPass(activeMove()) : undefined;
+        const aim = isPassAction(action) || action === 'dribble' ? aimForPass(activeMove()) : undefined;
         presses.push({ action, aim, touch: press });
       }
     },
@@ -345,7 +360,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       const pass = passActions.find((action) => next.includes(action));
       if (pass) presses.push({ action: pass, aim: aimForPass(activeMove()) });
       for (const action of next) {
-        if (!isPassAction(action)) presses.push({ action });
+        if (!isPassAction(action)) presses.push({ action, ...(action === 'dribble' ? { aim: activeMove() } : {}) });
       }
       const slotIdx = slotCodes.indexOf(code as (typeof slotCodes)[number]);
       if (slotIdx >= 0 && !next.length) slotPresses.push(slotIdx as SlotIndex);
@@ -359,6 +374,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       lastShoot = false;
       stickHoldTicks = 0;
       stickPeak = 0;
+      stickPeakDir = STILL;
       proStickShooting = false;
       proStickDir = STILL;
       touch.clear();
@@ -371,10 +387,15 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       lastShoot = shootEdges.shift()?.down ?? shootDown();
       const held = (action: (typeof heldActions)[number]) =>
         !!takePress([action]) || keyDown(action) || touchDown(action) || pad.down(action);
+      const dribblePress = takePress(['dribble']);
+      const dribbleHeld = !!dribblePress || keyDown('dribble') || touchDown('dribble') || pad.down('dribble');
       const pass = takePress(passActions);
       const move = activeMove();
       const heldAim = aimForPass(move);
       const passAim = pass?.aim && Math.hypot(pass.aim.x, pass.aim.z) >= PASS_AIM_MINIMUM ? pass.aim : heldAim;
+      const dribbleDir = dribblePress?.aim && Math.hypot(dribblePress.aim.x, dribblePress.aim.z) >= 0.15
+        ? dribblePress.aim
+        : (dribbleHeld && Math.hypot(move.x, move.z) >= 0.15 ? move : undefined);
       const iconSlot = slotPresses.shift();
       return {
         move,
@@ -382,7 +403,9 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
         contest: held('contest'),
         steal: held('steal'),
         screen: held('screen'),
-        dribble: held('dribble'),
+        dribble: dribbleHeld,
+        intenseD: held('intenseD'),
+        ...(dribbleDir ? { dribbleDir } : {}),
         shoot: lastShoot,
         pass: !!pass,
         passType: pass && (pass.action === 'lobPass' ? 'lob' : pass.action === 'bouncePass' ? 'bounce' : 'chest'),

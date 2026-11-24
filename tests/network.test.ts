@@ -124,11 +124,17 @@ test('control validator accepts new gameplay fields and rejects invalid enums', 
     pumpFake: true,
     callScreen: true,
     callPass: false,
+    intenseD: true,
+    dribbleDir: { x: -0.7, z: 0.7 },
     offensePlay: 'fiveOut',
     defenseScheme: 'zone23',
   }), true);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, shotType: 'stepBack' }), true);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, shotType: 'euro' }), true);
   assert.equal(validateControl({ move: { x: 0, z: 0 }, shotType: 'skyhook' }), false);
   assert.equal(validateControl({ move: { x: 0, z: 0 }, offensePlay: 'triangle' }), false);
   assert.equal(validateControl({ move: { x: 0, z: 0 }, defenseScheme: 'box1' }), false);
   assert.equal(validateControl({ move: { x: 0, z: 0 }, pumpFake: 1 }), false);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, intenseD: 1 }), false);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, dribbleDir: { x: 1.5, z: 0 } }), false);
 });

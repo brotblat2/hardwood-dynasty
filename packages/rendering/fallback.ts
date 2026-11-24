@@ -424,6 +424,39 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     target.fillStyle = shadow;
     target.fillRect(-1, -1, 2, 2);
     target.restore();
+    const action = player.action;
+    if (action?.intenseD || action?.bodyUp === 'clamp' || action?.bodyUp === 'ride') {
+      const arc: Point[] = [];
+      const arcSteps = 16;
+      for (let i = 0; i <= arcSteps; i++) {
+        const theta = pose.facing + (i / arcSteps - 0.5) * Math.PI * 0.84;
+        arc.push(project(x + 0.485 * Math.cos(theta), 0.023, z + 0.485 * Math.sin(theta)));
+      }
+      line(target, action.bodyUp === 'clamp' ? '#2e9dff' : '#5ec8ff', ratio * (action.bodyUp === 'clamp' ? 2.6 : 1.9), ...arc);
+    }
+    const st = action?.stumble ?? 0;
+    const fb = action?.flyBy ?? 0;
+    if (st > 0 || fb > 0) {
+      const ringPts: Point[] = [];
+      const steps = 28;
+      for (let i = 0; i <= steps; i++) {
+        const arc = i / steps * Math.PI * 2;
+        ringPts.push(project(x + 0.50 * Math.cos(arc), 0.024, z + 0.50 * Math.sin(arc)));
+      }
+      line(target, st > 0 ? '#ffb347' : '#ff7f66', ratio * 2.1, ...ringPts);
+    }
+    const greenAge = state.shotFeedback?.green && state.shotFeedback.playerId === player.id ? state.tick - state.shotFeedback.tick : -1;
+    if (greenAge >= 0 && greenAge < 36) {
+      const pulse = 1 - greenAge / 36;
+      const radius = 0.48 * (1 + (1 - pulse) * 0.75);
+      const ringPts: Point[] = [];
+      const steps = 32;
+      for (let i = 0; i <= steps; i++) {
+        const arc = i / steps * Math.PI * 2;
+        ringPts.push(project(x + radius * Math.cos(arc), 0.027, z + radius * Math.sin(arc)));
+      }
+      line(target, `rgba(140,255,102,${(0.9 * pulse).toFixed(2)})`, ratio * 2.5, ...ringPts);
+    }
     if (selected || isPassTarget) {
       const marker: Point[] = [];
       const steps = 36;

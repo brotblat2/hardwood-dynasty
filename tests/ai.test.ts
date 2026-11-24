@@ -230,3 +230,50 @@ test('defensive schemes switch screens and align into 2-3 zone, while iso clears
   const isoOut = cIso.controls(iso, new Set(), { '0-0': { move: { x: 0, z: 0 }, offensePlay: 'iso' } });
   assert.ok(isoOut['0-1'].move.z < -0.5, 'iso clears teammate to opposite flank');
 });
+
+test('coach uses intenseD on-ball, scales pump-fake discipline, and creates directional dribbleDir', () => {
+  const s = fixture(), coach = createCoach();
+  s.players[0].position = { x: 6.2, z: 0 };
+  s.players[2].position = { x: 7.2, z: 0 };
+  const ctrl = coach.controls(s);
+  assert.equal(ctrl['1-0'].intenseD, true, 'half-court on-ball defender engages intenseD');
+
+  let rookieBites = 0;
+  let hofBites = 0;
+  for (let tick = 0; tick < 80; tick += 8) {
+    const rState = fixture();
+    rState.config.difficulty = 'Rookie';
+    rState.tick = tick;
+    rState.players[0].position = { x: 6.2, z: 0 };
+    rState.players[0].pose = 'pumpFake';
+    rState.players[2].position = { x: 7.7, z: 0 };
+    if (createCoach().controls(rState)['1-0'].contest) rookieBites++;
+
+    const hState = fixture();
+    hState.config.difficulty = 'Hall of Fame';
+    hState.tick = tick;
+    hState.players[0].position = { x: 6.2, z: 0 };
+    hState.players[0].pose = 'pumpFake';
+    hState.players[2].position = { x: 7.7, z: 0 };
+    if (createCoach().controls(hState)['1-0'].contest) hofBites++;
+  }
+  assert.ok(rookieBites > hofBites, 'Rookie bites on pump fakes more often than Hall of Fame');
+
+  const offState = fixture(), offCoach = createCoach();
+  offState.config.difficulty = 'All-Star';
+  offState.players[0].profile.ratings.shooting = 90;
+  offState.players[0].profile.ratings.handling = 88;
+  offState.players[0].position = { x: 6.0, z: 0 };
+  offState.players[2].position = { x: 7.0, z: 0 };
+  let sawDir = false;
+  for (let tick = 0; tick < 90; tick++) {
+    offState.tick = tick;
+    const out = offCoach.controls(offState)['0-0'];
+    if (out.dribble && out.dribbleDir) {
+      assert.ok(Math.hypot(out.dribbleDir.x, out.dribbleDir.z) > 0.2);
+      sawDir = true;
+      break;
+    }
+  }
+  assert.ok(sawDir, 'CPU handler should issue directional dribbleDir under pressure');
+});

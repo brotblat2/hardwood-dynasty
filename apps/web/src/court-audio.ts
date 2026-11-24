@@ -1,6 +1,6 @@
 import type { GameState } from '../../../packages/contracts/index.ts';
 
-type Sound = 'bounce' | 'squeak' | 'rim' | 'whistle' | 'net' | 'crowd' | 'buzzer' | 'block' | 'dunk' | 'green';
+type Sound = 'bounce' | 'squeak' | 'rim' | 'whistle' | 'net' | 'crowd' | 'buzzer' | 'block' | 'dunk' | 'green' | 'hardDribble' | 'clamp' | 'ankleBreaker' | 'flyBy';
 
 export function createCourtAudio() {
   let context: AudioContext | undefined;
@@ -11,6 +11,9 @@ export function createCourtAudio() {
   let lastBounce = -Infinity;
   let lastSqueak = -Infinity;
   let lastFeedbackTick = -1;
+  let lastCalloutTick = -1;
+  let lastMoveKey = '';
+  let lastClampTick = -Infinity;
   let velocity: { x: number; z: number } | undefined;
   let inFlight = false;
   let dunkPending = false;
@@ -91,6 +94,70 @@ export function createCourtAudio() {
       rattle.stop(when + 0.2);
       return;
     }
+    if (sound === 'hardDribble' || sound === 'clamp') {
+      const dur = sound === 'clamp' ? 0.14 : 0.11;
+      const out = ctx.createGain();
+      out.gain.setValueAtTime(0.0001, when);
+      out.gain.exponentialRampToValueAtTime((sound === 'clamp' ? 0.12 : 0.13) * gain, when + 0.008);
+      out.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      out.connect(ctx.destination);
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(sound === 'clamp' ? 98 : 165, when);
+      osc.frequency.exponentialRampToValueAtTime(sound === 'clamp' ? 40 : 48, when + dur);
+      osc.connect(out);
+      osc.start(when);
+      osc.stop(when + dur);
+      if (sound === 'clamp') {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(360, when);
+        src.connect(filter).connect(out);
+        src.start(when, Math.random() * 0.2);
+        src.stop(when + dur);
+      }
+      return;
+    }
+    if (sound === 'ankleBreaker') {
+      for (const offset of [0, 0.08]) {
+        const out = ctx.createGain();
+        out.gain.setValueAtTime(0.0001, when + offset);
+        out.gain.exponentialRampToValueAtTime(0.065 * gain, when + offset + 0.008);
+        out.gain.exponentialRampToValueAtTime(0.0001, when + offset + 0.09);
+        out.connect(ctx.destination);
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(2600, when + offset);
+        filter.frequency.exponentialRampToValueAtTime(950, when + offset + 0.09);
+        filter.Q.value = 6.2;
+        src.connect(filter).connect(out);
+        src.start(when + offset, Math.random() * 0.25);
+        src.stop(when + offset + 0.09);
+      }
+      return;
+    }
+    if (sound === 'flyBy') {
+      const out = ctx.createGain();
+      out.gain.setValueAtTime(0.0001, when);
+      out.gain.exponentialRampToValueAtTime(0.075 * gain, when + 0.03);
+      out.gain.exponentialRampToValueAtTime(0.0001, when + 0.22);
+      out.connect(ctx.destination);
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(900, when);
+      filter.frequency.exponentialRampToValueAtTime(320, when + 0.22);
+      filter.Q.value = 1.4;
+      src.connect(filter).connect(out);
+      src.start(when, Math.random() * 0.3);
+      src.stop(when + 0.22);
+      return;
+    }
     const length = sound === 'crowd' ? 0.95 : sound === 'whistle' ? 0.28 : sound === 'net' ? 0.16 : sound === 'block' ? 0.09 : 0.12;
     const out = ctx.createGain();
     const level = ({ bounce: 0.11, squeak: 0.044, rim: 0.075, whistle: 0.06, net: 0.11, crowd: 0.13, block: 0.11 } as const)[sound] * gain;
@@ -144,6 +211,24 @@ export function createCourtAudio() {
     if (state.shotFeedback?.green && state.shotFeedback.playerId === controlledId && state.shotFeedback.tick !== lastFeedbackTick) {
       lastFeedbackTick = state.shotFeedback.tick;
       play('green');
+    }
+    if (state.callout && state.callout.tick !== lastCalloutTick) {
+      lastCalloutTick = state.callout.tick;
+      if (state.callout.text === 'ANKLE BREAKER!') play('ankleBreaker');
+      else if (state.callout.text === 'CLAMPED!') play('clamp');
+      else if (state.callout.text === 'FLY-BY!') play('flyBy');
+    }
+    const owner = state.ball.ownerId ? state.players.find(p => p.id === state.ball.ownerId) : undefined;
+    const activeMove = owner?.action?.dribbleMove;
+    const moveKey = activeMove ? `${owner!.id}:${activeMove}` : '';
+    if (activeMove && moveKey !== lastMoveKey) {
+      play('hardDribble');
+    }
+    lastMoveKey = moveKey;
+    const clampedPlayer = state.players.find(p => p.id === controlledId);
+    if (clampedPlayer?.action?.bodyUp === 'clamp' && state.tick - lastClampTick > 20) {
+      play('clamp', 0.8);
+      lastClampTick = state.tick;
     }
     inFlight = state.ball.kind === 'shot';
     const low = state.ball.position.y < 0.26;

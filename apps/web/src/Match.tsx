@@ -72,6 +72,10 @@ function cleanMultiplayerInput(input: Control): Control {
   if (input.steal) out.steal = true;
   if (input.screen) out.screen = true;
   if (input.dribble) out.dribble = true;
+  if (input.intenseD) out.intenseD = true;
+  if (input.dribbleDir) {
+    out.dribbleDir = { x: Math.max(-1, Math.min(1, input.dribbleDir.x)), z: Math.max(-1, Math.min(1, input.dribbleDir.z)) };
+  }
   if (input.shotType) out.shotType = input.shotType;
   if (input.pumpFake) out.pumpFake = true;
   if (input.callScreen) out.callScreen = true;
@@ -123,7 +127,9 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const prevFrameRef = useRef<PrevFrame | null>(null);
   const meterRef = useRef<HTMLDivElement>(null);
   const meterFillRef = useRef<HTMLDivElement>(null);
+  const meterGreenRef = useRef<HTMLSpanElement>(null);
   const calloutRef = useRef<HTMLDivElement>(null);
+  const playCalloutRef = useRef<HTMLDivElement>(null);
   const badgeRefs = useRef<(HTMLSpanElement | null)[]>([null, null, null, null]);
   const controls = useControls({ enabled: !paused && !error && ready, bindings });
   const readControl = useRef(controls.read);
@@ -279,8 +285,15 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         if (state.possession === side.current && input.pass) {
           input.callPass = true;
         }
+        if (state.possession !== side.current && state.ball.kind === 'held' && input.screen) {
+          input.intenseD = true;
+          input.screen = false;
+        }
       }
 
+      if (input.dribbleDir) {
+        input.dribbleDir = renderer.current?.projectMove(input.dribbleDir) ?? input.dribbleDir;
+      }
       input.move = moveCourt;
       Object.assign(input, benchAction.current);
       benchAction.current = {};
@@ -352,7 +365,25 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
             meterEl.style.transform = `translate(${pt.x.toFixed(1)}px, ${pt.y.toFixed(1)}px) translate(-50%, -100%)`;
             const pct = Math.min(100, (curCharge / 1.2) * 100);
             meterFillEl.style.width = `${pct.toFixed(1)}%`;
-            meterEl.dataset.zone = Math.abs(curCharge - IDEAL_RELEASE) < 0.065 ? 'green' : curCharge > 0.72 ? 'late' : 'early';
+            const defenders = renderState.players.filter(p => p.side !== activePlayer.side);
+            const closestDef = defenders.reduce<{ d: number; contesting: boolean }>((best, q) => {
+              const d = Math.hypot(q.position.x - activePlayer.position.x, q.position.z - activePlayer.position.z);
+              const c = q.pose === 'contest' || !!q.action?.intenseD;
+              return d < best.d ? { d, contesting: c } : best;
+            }, { d: 99, contesting: false });
+            const halfCourt = renderState.config.halfCourt ?? renderState.config.mode === 'blacktop';
+            const rimX = (halfCourt ? 1 : attackSign(activePlayer.side)) * COURT.rimX;
+            const range = Math.hypot(rimX - activePlayer.position.x, -activePlayer.position.z);
+            const rating = range < 3.2 ? activePlayer.profile.ratings.finishing : activePlayer.profile.ratings.shooting;
+            const estPressure = Math.max(0, Math.min(1, 1 - closestDef.d / 2.2)) * (closestDef.contesting ? 0.65 : 0.25);
+            const gw = Math.max(0.018, Math.min(0.088, 0.036 + (rating - 60) * 0.0007 - estPressure * 0.025));
+            const idealPct = (IDEAL_RELEASE / 1.2) * 100;
+            const widthPct = ((gw * 2) / 1.2) * 100;
+            if (meterGreenRef.current) {
+              meterGreenRef.current.style.left = `${(idealPct - widthPct / 2).toFixed(2)}%`;
+              meterGreenRef.current.style.width = `${widthPct.toFixed(2)}%`;
+            }
+            meterEl.dataset.zone = Math.abs(curCharge - IDEAL_RELEASE) <= gw ? 'green' : curCharge > IDEAL_RELEASE + gw ? 'late' : 'early';
           } else {
             meterEl.hidden = true;
           }
@@ -370,7 +401,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
               calloutEl.hidden = false;
               calloutEl.style.transform = `translate(${pt.x.toFixed(1)}px, ${pt.y.toFixed(1)}px) translate(-50%, -100%)`;
               calloutEl.dataset.tone = fb.green ? 'green' : fb.timing.includes('Slightly') || fb.timing === 'Excellent' ? 'good' : 'miss';
-              calloutEl.textContent = `${fb.timing.toUpperCase()} · ${fb.contest.toUpperCase()} · ${fb.style.toUpperCase()}${fb.bank ? ' (BANK)' : ''}`;
+              const contestText = fb.contestPct != null ? `${fb.contestPct}% ${fb.contest.toUpperCase()}` : fb.contest.toUpperCase();
+              calloutEl.textContent = `${fb.timing.toUpperCase()} · ${contestText} · ${fb.style.toUpperCase()}${fb.rhythm ? ' · RHYTHM' : ''}${fb.bank ? ' (BANK)' : ''}`;
             } else {
               calloutEl.hidden = true;
             }
@@ -379,6 +411,23 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
           }
         } else if (calloutEl) {
           calloutEl.hidden = true;
+        }
+
+        const playCalloutEl = playCalloutRef.current;
+        const callout = renderState.callout;
+        if (playCalloutEl && r && callout && renderState.tick - callout.tick >= 0 && renderState.tick - callout.tick < 72 && !pausedRef.current) {
+          const actor = callout.playerId ? renderState.players.find(p => p.id === callout.playerId) : undefined;
+          const pt = actor ? r.projectPoint(actor.position.x, 2.72, actor.position.z) : null;
+          playCalloutEl.hidden = false;
+          playCalloutEl.dataset.tone = callout.tone;
+          playCalloutEl.textContent = callout.text;
+          if (pt && pt.visible) {
+            playCalloutEl.style.transform = `translate(${pt.x.toFixed(1)}px, ${pt.y.toFixed(1)}px) translate(-50%, -100%)`;
+          } else {
+            playCalloutEl.style.transform = `translate(${(container.clientWidth * 0.5).toFixed(1)}px, ${(container.clientHeight * 0.24).toFixed(1)}px) translate(-50%, -100%)`;
+          }
+        } else if (playCalloutEl) {
+          playCalloutEl.hidden = true;
         }
 
         const ownOwner = renderState.ball.ownerId === selected.current && renderState.possession === side.current;
@@ -494,10 +543,12 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     }} />
     <div className="court-overlays" aria-hidden="true">
       <div className="overhead-meter" ref={meterRef} hidden>
+        <span className="overhead-meter__green" ref={meterGreenRef} />
         <div className="overhead-meter__fill" ref={meterFillRef} />
         <i className="overhead-meter__notch" style={{ left: `${(IDEAL_RELEASE / 1.2) * 100}%` }} />
       </div>
       <div className="shot-callout" ref={calloutRef} hidden />
+      <div className="play-callout" ref={playCalloutRef} hidden />
       {[0, 1, 2, 3].map(slot => (
         <span key={slot} className="icon-badge" ref={el => { badgeRefs.current[slot] = el; }} hidden>{slot + 1}</span>
       ))}
@@ -523,6 +574,18 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     {localPlayer && <div className="player-hud"><div className="hud-name"><i style={{ background: hud?.teams[localPlayer.side].color }} /> <strong>{localPlayer.profile.name}</strong> <small>#{localPlayer.profile.number}</small></div>
       <div className="meter stamina" aria-label="Stamina"><i style={{ width: (localPlayer.stamina <= 1 ? localPlayer.stamina * 100 : localPlayer.stamina) + '%' }} /></div>
       <div className={'meter release' + (charge > 0 ? ' active' : '')} aria-label="Shot release"><i style={{ width: Math.min(100, charge / 1.2 * 100) + '%' }} /><b style={{ left: (IDEAL_RELEASE / 1.2 * 100) + '%' }} /></div>
+      {hud && (hud.ball.ownerId === localPlayer.id ? <div className="hud-status">
+        <div className="adrenaline-pips" aria-label="Adrenaline">
+          {[0, 1, 2].map(i => <i key={i} className={'adrenaline-pip' + (i < (localPlayer.action?.adrenaline ?? 3) ? ' active' : '')} />)}
+        </div>
+        <span className={'ball-chip' + (localPlayer.action?.ballState === 'dead' ? ' dead' : '')}>
+          {localPlayer.action?.ballState === 'dead' ? 'DEAD DRIBBLE' : localPlayer.action?.ballState === 'tripleThreat' ? 'TRIPLE THREAT' : 'LIVE'}
+        </span>
+      </div> : (localPlayer.action?.intenseD || localPlayer.action?.bodyUp) ? <div className="hud-status">
+        <span className="ball-chip defense">
+          {localPlayer.action?.bodyUp === 'clamp' ? 'CLAMPED' : localPlayer.action?.bodyUp === 'ride' ? 'BODY-UP' : 'INTENSE-D'}
+        </span>
+      </div> : null)}
       {event && event.type !== 'pass' && <p>{event.detail ?? ({ score: 'Basket', miss: 'Missed shot', rebound: 'Rebound', steal: 'Steal', block: 'Block', shot: 'Shot attempt', foul: 'Foul', turnover: 'Turnover', period: 'Period ended', assist: 'Assist', timeout: 'Timeout', substitution: 'Substitution' } as Record<string, string>)[event.type]}</p>}
     </div>}
     {hud && !paused && !finish && !error && (

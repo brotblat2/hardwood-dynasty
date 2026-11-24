@@ -3,7 +3,7 @@ import test from 'node:test';
 import { fixtureTeam } from '../packages/contracts/fixtures.ts';
 import type { GamePlayer } from '../packages/contracts/index.ts';
 import {
-  createInputState, DEFAULT_KEYBOARD_BINDINGS as bindings, gamepadMove,
+  createInputState, DEFAULT_KEYBOARD_BINDINGS as bindings, deriveShotType, gamepadMove,
   mergeBindings, selectDirectionalPassTarget, selectSwitchTarget,
 } from '../packages/controls/input.ts';
 
@@ -212,4 +212,47 @@ test('smart player switching aligns directionally and avoids two-player ping-pon
   const all = [cur, near, right, third];
   assert.equal(selectSwitchTarget(cur, all, { x: 0, z: 0 }, { x: 1, z: 0 }), right.id);
   assert.equal(selectSwitchTarget(cur, all, { x: 0, z: 0 }, { x: 0, z: 0 }, [near.id]), third.id);
+});
+
+test('controls map intenseD, capture directional dribbleDir, and derive euro step', () => {
+  const input = createInputState();
+  input.keyDown('KeyZ', bindings);
+  assert.equal(input.read(bindings).intenseD, true);
+  input.keyUp('KeyZ');
+  assert.equal(input.read(bindings).intenseD, false);
+
+  const buttons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));
+  buttons[6] = { pressed: true, touched: true, value: 1 };
+  const pad = { axes: [0, 0, 0, 0], buttons };
+  assert.equal(input.read(bindings, pad).intenseD, true);
+  buttons[0] = { pressed: true, touched: true, value: 1 };
+  const bounceFrame = input.read(bindings, pad);
+  assert.equal(bounceFrame.passType, 'bounce');
+  assert.equal(bounceFrame.intenseD, false);
+
+  input.clear();
+  input.keyDown('KeyD', bindings);
+  input.keyDown('KeyF', bindings);
+  const keyDribble = input.read(bindings);
+  assert.equal(keyDribble.dribble, true);
+  assert.ok((keyDribble.dribbleDir?.x ?? 0) > 0.5);
+  input.clear();
+
+  const stickButtons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));
+  const stickPad = { axes: [0, 0, -0.9, 0], buttons: stickButtons };
+  input.sampleGamepad(stickPad);
+  input.sampleGamepad(stickPad);
+  stickPad.axes = [0, 0, 0, 0];
+  input.sampleGamepad(stickPad);
+  const flick = input.read(bindings, stickPad);
+  assert.equal(flick.dribble, true);
+  assert.ok((flick.dribbleDir?.x ?? 0) < -0.5);
+
+  const team = fixtureTeam('home');
+  const slasher: GamePlayer = {
+    id: team.roster[0].id, profile: team.roster[0], side: 0,
+    position: { x: 9.8, z: 0 }, velocity: { x: 0, z: 0 }, facing: 0, stamina: 100, pose: 'dribble',
+  };
+  const rim = { x: 12.65, z: 0 };
+  assert.equal(deriveShotType(slasher, { x: 0.45, z: 0.89 }, rim, { dribble: true, sprint: false }), 'euro');
 });

@@ -74,6 +74,9 @@ export function makePlayerFactory() {
   const numberGeometry = new THREE.PlaneGeometry(0.245, 0.227);
   const ringGeometry = new THREE.RingGeometry(0.38, 0.435, 44);
   const meterGeometry = new THREE.RingGeometry(0.5, 0.565, 64, 1, 0, Math.PI * 2);
+  const clampArcGeometry = new THREE.RingGeometry(0.45, 0.52, 24, 1, -Math.PI * 0.42, Math.PI * 0.84);
+  const statusRingGeometry = new THREE.RingGeometry(0.46, 0.53, 36);
+  const greenRingGeometry = new THREE.RingGeometry(0.44, 0.52, 40);
   const shadowGeometry = new THREE.PlaneGeometry(1.65, 1.35);
   const chargeGreen = new THREE.Color(0xbaff93);
   const clockGold = new THREE.Color(0xffca5d);
@@ -274,9 +277,27 @@ export function makePlayerFactory() {
     meter.rotation.x = -Math.PI / 2;
     meter.position.y = 0.025;
     meter.renderOrder = 3;
-    root.add(shadow, ring, meter);
+    const clampArcMaterial = new THREE.MeshBasicMaterial({ color: 0x5ec8ff, transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide });
+    const clampArc = new THREE.Mesh(clampArcGeometry, clampArcMaterial);
+    clampArc.rotation.x = -Math.PI / 2;
+    clampArc.position.y = 0.022;
+    clampArc.renderOrder = 3;
+    clampArc.visible = false;
+    const statusRingMaterial = new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.82, depthWrite: false, side: THREE.DoubleSide });
+    const statusRing = new THREE.Mesh(statusRingGeometry, statusRingMaterial);
+    statusRing.rotation.x = -Math.PI / 2;
+    statusRing.position.y = 0.023;
+    statusRing.renderOrder = 3;
+    statusRing.visible = false;
+    const greenRingMaterial = new THREE.MeshBasicMaterial({ color: 0x8cff66, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
+    const greenRing = new THREE.Mesh(greenRingGeometry, greenRingMaterial);
+    greenRing.rotation.x = -Math.PI / 2;
+    greenRing.position.y = 0.026;
+    greenRing.renderOrder = 3;
+    greenRing.visible = false;
+    root.add(shadow, ring, meter, clampArc, statusRing, greenRing);
 
-    function animate(gamePlayer: GamePlayer, tick: number, heldBall: Vec3 | undefined, selected: boolean, charge: number, event: GameEvent | undefined) {
+    function animate(gamePlayer: GamePlayer, tick: number, heldBall: Vec3 | undefined, selected: boolean, charge: number, event: GameEvent | undefined, greenPulse = 0) {
       const pose = motion(gamePlayer, tick, heldBall, charge, event);
       root.position.set(gamePlayer.position.x, 0, gamePlayer.position.z);
       model.rotation.y = Math.PI / 2 - pose.facing;
@@ -286,6 +307,28 @@ export function makePlayerFactory() {
         const fraction = Math.min(charge / 1.2, 1);
         meter.geometry.setDrawRange(0, Math.max(6, Math.round(fraction * 64) * 6));
         meterMaterial.color.copy(Math.abs(charge - 0.62) < 0.065 ? chargeGreen : charge > 0.72 ? lateRed : clockGold);
+      }
+      const action = gamePlayer.action;
+      const clamping = action?.bodyUp === 'clamp';
+      const riding = action?.bodyUp === 'ride';
+      clampArc.visible = Boolean(action?.intenseD || clamping || riding);
+      if (clampArc.visible) {
+        clampArc.rotation.z = -pose.facing;
+        clampArcMaterial.color.setHex(clamping ? 0x2e9dff : 0x5ec8ff);
+        clampArcMaterial.opacity = clamping ? 0.9 : 0.65;
+      }
+      const st = action?.stumble ?? 0;
+      const fb = action?.flyBy ?? 0;
+      statusRing.visible = st > 0 || fb > 0;
+      if (statusRing.visible) {
+        statusRingMaterial.color.setHex(st > 0 ? 0xffb347 : 0xff7f66);
+        statusRingMaterial.opacity = Math.max(st, fb) * 0.85;
+        statusRing.scale.setScalar(1 + Math.sin(tick * 0.6) * 0.06);
+      }
+      greenRing.visible = greenPulse > 0;
+      if (greenRing.visible) {
+        greenRing.scale.setScalar(1 + (1 - greenPulse) * 0.75);
+        greenRingMaterial.opacity = 0.9 * greenPulse;
       }
 
       model.position.y = pose.rise * normalScale;
@@ -333,7 +376,7 @@ export function makePlayerFactory() {
     }
 
     function dispose() {
-      for (const mat of [skin, skinShade, hair, eyeWhite, jersey, piping, shorts, shoes, sole, socks, laces, frontMaterial, backMaterial, meterMaterial]) mat.dispose();
+      for (const mat of [skin, skinShade, hair, eyeWhite, jersey, piping, shorts, shoes, sole, socks, laces, frontMaterial, backMaterial, meterMaterial, clampArcMaterial, statusRingMaterial, greenRingMaterial]) mat.dispose();
       frontDigits.dispose();
       backDigits.dispose();
       for (const geometry of bakedGeometries) geometry.dispose();
@@ -347,7 +390,7 @@ export function makePlayerFactory() {
   }
 
   function dispose() {
-    for (const geometry of [sphere, upperArmGeometry, forearmGeometry, thighGeometry, shinGeometry, cuffGeometry, torsoGeometry, numberGeometry, ringGeometry, meterGeometry, shadowGeometry]) geometry.dispose();
+    for (const geometry of [sphere, upperArmGeometry, forearmGeometry, thighGeometry, shinGeometry, cuffGeometry, torsoGeometry, numberGeometry, ringGeometry, meterGeometry, clampArcGeometry, statusRingGeometry, greenRingGeometry, shadowGeometry]) geometry.dispose();
     clothTexture.dispose();
     shadowMaterial.map?.dispose();
     shadowMaterial.dispose();

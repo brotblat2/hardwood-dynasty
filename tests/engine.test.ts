@@ -315,3 +315,176 @@ test('contesting and low stamina slow horizontal movement', () => {
   assert.ok(contesting.state.players[0].position.z < free.state.players[0].position.z);
   assert.ok(fatigued.state.players[0].position.z < free.state.players[0].position.z);
 });
+
+test('dribble repertoire, adrenaline depletion and reset on possession change', () => {
+  const g = engine({ playersPerTeam: 2, seed: 4 });
+  const handler = g.state.players[0];
+  const opp = g.state.players[2];
+  handler.position = { x: 5.5, z: 0 };
+  opp.position = { x: -11, z: -5 };
+
+  // From tripleThreat with neutral dir -> jab (keeps adrenaline 3)
+  g.step({ [handler.id]: { move: { x: 0, z: 0 }, dribble: true } });
+  assert.equal(handler.action?.dribbleMove, 'jab');
+  assert.equal(handler.action?.adrenaline, 3);
+  for (let i = 0; i < 32; i++) g.step({ [handler.id]: { move: { x: 0, z: 0 } } });
+
+  // Transition to live dribble and perform crossover -> stepBack -> inAndOut -> hesitation (spending 3 -> 0 adrenaline)
+  for (let i = 0; i < 4; i++) g.step({ [handler.id]: { move: { x: 1, z: 0 } } });
+  assert.equal(handler.action?.ballState, 'live');
+  assert.equal(handler.action?.adrenaline, 3);
+
+  g.step({ [handler.id]: { move: { x: 0, z: 1 }, dribble: true, dribbleDir: { x: 0, z: 1 } } });
+  assert.equal(handler.action?.dribbleMove, 'crossover');
+  assert.equal(handler.action?.adrenaline, 2);
+  for (let i = 0; i < 34; i++) g.step({ [handler.id]: { move: { x: 0.4, z: 0 } } });
+
+  g.step({ [handler.id]: { move: { x: -1, z: 0 }, dribble: true, dribbleDir: { x: -1, z: 0 } } });
+  assert.equal(handler.action?.dribbleMove, 'stepBack');
+  assert.equal(handler.action?.adrenaline, 1);
+  for (let i = 0; i < 34; i++) g.step({ [handler.id]: { move: { x: 0.2, z: 0 } } });
+
+  // Defender close for behind-the-back / between-legs checks
+  opp.position = { x: handler.position.x + 1.15, z: handler.position.z };
+  g.step({ [handler.id]: { move: { x: 0, z: 0 }, dribble: true, dribbleDir: { x: 0, z: 1 } } });
+  assert.ok(handler.action?.dribbleMove === 'behindBack' || handler.action?.dribbleMove === 'betweenLegs');
+  assert.equal(handler.action?.adrenaline, 0);
+
+  // Neutral hesitation on live ball with 0 adrenaline
+  for (let i = 0; i < 34; i++) g.step({ [handler.id]: { move: { x: 0, z: 0 } } });
+  opp.position = { x: -11, z: -5 };
+  g.step({ [handler.id]: { move: { x: 0, z: 0 }, dribble: true } });
+  assert.equal(handler.action?.dribbleMove, 'hesitation');
+  assert.equal(handler.action?.adrenaline, 0);
+
+  // Possession change resets adrenaline to 3 for new handler (steal test)
+  for (let i = 0; i < 30; i++) g.step();
+  const thief = g.state.players[2];
+  thief.profile.ratings.perimeter = 99;
+  thief.position = { x: g.state.ball.position.x + 0.35, z: g.state.ball.position.z };
+  for (let i = 0; i < 50 && g.state.ball.ownerId !== thief.id; i++) {
+    thief.position = { x: g.state.ball.position.x + 0.35, z: g.state.ball.position.z };
+    g.step({ [thief.id]: { ...cmd, steal: true } });
+  }
+  assert.equal(g.state.ball.ownerId, thief.id);
+  assert.equal(thief.action?.adrenaline, 3);
+});
+
+test('directional momentum-mismatch dribble triggers ankle-breaker stumble and callout', () => {
+  let broke = false;
+  for (let seed = 1; seed < 40 && !broke; seed++) {
+    const roster = structuredClone(teams);
+    roster[0].roster[0].ratings.handling = 97;
+    roster[1].roster[0].ratings.perimeter = 55;
+    const g = createEngine(roster, { playersPerTeam: 1, seed });
+    const [handler, def] = g.state.players;
+    handler.position = { x: 6, z: 0 };
+    def.position = { x: 7.1, z: -0.6 };
+    for (let i = 0; i < 6; i++) {
+      g.step({ [handler.id]: { move: { x: 1, z: 0 } }, [def.id]: { move: { x: 0, z: -1 }, intenseD: false } });
+    }
+    def.velocity = { x: 0, z: -4.2 };
+    handler.position = { x: 6.5, z: 0 };
+    def.position = { x: 7.45, z: 0 };
+    g.step({ [handler.id]: { move: { x: 0, z: 1 }, dribble: true, dribbleDir: { x: 0, z: 1 } } });
+    if (g.state.callout?.text === 'ANKLE BREAKER!' && (def.action?.stumble ?? 0) > 0) {
+      assert.equal(def.pose, 'stumble');
+      broke = true;
+    }
+  }
+  assert.ok(broke, 'expected ankle-breaker stumble on momentum mismatch');
+});
+
+test('intense-D body-up clamps drives and forces dead-ball pickup', () => {
+  const roster = structuredClone(teams);
+  roster[1].roster[0].ratings.perimeter = 95;
+  roster[1].roster[0].ratings.strength = 92;
+  roster[0].roster[0].ratings.handling = 74;
+  roster[0].roster[0].ratings.strength = 60;
+  const g = createEngine(roster, { playersPerTeam: 1, seed: 5 });
+  const [handler, def] = g.state.players;
+  handler.position = { x: 6, z: 0 };
+  def.position = { x: 6.75, z: 0 };
+  g.step({ [handler.id]: { move: { x: 1, z: 0 } } }); // enter live dribble
+  let sawClamp = false;
+  for (let i = 0; i < 24; i++) {
+    def.position = { x: handler.position.x + 0.72, z: handler.position.z };
+    g.step({
+      [handler.id]: { move: { x: 1, z: 0 } },
+      [def.id]: { move: { x: -0.4, z: 0 }, intenseD: true },
+    });
+    if (handler.action?.bodyUp === 'clamp') sawClamp = true;
+  }
+  assert.ok(sawClamp, 'should register chest-to-chest clamp');
+  assert.equal(handler.action?.deadDribble, true);
+  assert.equal(handler.action?.ballState, 'dead');
+  assert.equal(g.state.callout?.text, 'CLAMPED!');
+});
+
+test('pump fake keeps triple-threat live, locks live dribble dead, and triggers fly-by', () => {
+  const g = engine({ playersPerTeam: 1, seed: 9 });
+  const [shooter, def] = g.state.players;
+  shooter.position = { x: 6, z: 0 };
+  def.position = { x: 7.2, z: 0 };
+
+  // From tripleThreat -> does NOT lock dead dribble
+  g.step({ [shooter.id]: { ...cmd, pumpFake: true } });
+  assert.notEqual(shooter.action?.ballState, 'dead');
+  for (let i = 0; i < 36; i++) g.step();
+
+  // Enter live dribble, then pumpFake -> locks dead + biting defender flies by
+  for (let i = 0; i < 4; i++) g.step({ [shooter.id]: { move: { x: 1, z: 0 } }, [def.id]: { move: { x: 0, z: 0 } } });
+  assert.equal(shooter.action?.ballState, 'live');
+  def.position = { x: shooter.position.x + 1.15, z: shooter.position.z };
+  g.step({ [shooter.id]: { ...cmd, pumpFake: true }, [def.id]: { ...cmd, contest: true } });
+  assert.equal(shooter.action?.deadDribble, true);
+  assert.equal(g.state.callout?.text, 'FLY-BY!' );
+  assert.ok((def.action?.flyBy ?? 0) > 0);
+  assert.ok(def.velocity.x < -1.0, 'defender lunges past shooter');
+});
+
+test('3D contestPct, stepBack rhythm & euro styles, jumpHeight, and JSON replay determinism', () => {
+  const openGame = engine({ playersPerTeam: 1, seed: 12 });
+  const [openShooter, openDef] = openGame.state.players;
+  openShooter.position = { x: 6.5, z: 0 };
+  openDef.position = { x: -10, z: 4 };
+  for (let i = 0; i < 10; i++) openGame.step({ [openShooter.id]: { ...cmd, shoot: true } });
+  assert.ok((openShooter.action?.gatherPhase ?? 0) > 0);
+  for (let i = 0; i < 27; i++) openGame.step({ [openShooter.id]: { ...cmd, shoot: true } });
+  assert.ok((openShooter.action?.jumpHeight ?? 0) > 0);
+  openGame.step();
+  assert.ok((openShooter.action?.jumpHeight ?? 0) > 0, 'jumpHeight stays synced immediately after release');
+  assert.ok((openGame.state.shotFeedback?.contestPct ?? 99) < 10);
+
+  // Step-back rhythm shot
+  const sbGame = engine({ playersPerTeam: 1, seed: 12 });
+  const [sbShooter, sbDef] = sbGame.state.players;
+  sbShooter.position = { x: 6.0, z: 0 };
+  sbDef.position = { x: 7.0, z: 0 };
+  sbGame.step({ [sbShooter.id]: { move: { x: 1, z: 0 } } });
+  sbGame.step({ [sbShooter.id]: { move: { x: -1, z: 0 }, dribble: true, dribbleDir: { x: -1, z: 0 } } });
+  assert.equal(sbShooter.action?.dribbleMove, 'stepBack');
+  for (let i = 0; i < 12; i++) sbGame.step();
+  for (let i = 0; i < 37; i++) sbGame.step({ [sbShooter.id]: { ...cmd, shoot: true, shotType: 'stepBack' }, [sbDef.id]: { ...cmd, contest: true, intenseD: true } });
+  sbGame.step({ [sbDef.id]: { ...cmd, contest: true, intenseD: true } });
+  assert.equal(sbGame.state.shotFeedback?.style, 'Step-back');
+  assert.equal(sbGame.state.shotFeedback?.rhythm, true);
+  assert.ok((sbGame.state.shotFeedback?.contestPct ?? 0) > (openGame.state.shotFeedback?.contestPct ?? 0));
+
+  // Euro step style & mid-action JSON replay determinism
+  const euroGame = engine({ playersPerTeam: 1, seed: 15 });
+  const [euroShooter, euroDef] = euroGame.state.players;
+  euroShooter.position = { x: 10.6, z: 0.9 };
+  euroDef.position = { x: 11.4, z: 0.3 };
+  for (let i = 0; i < 15; i++) euroGame.step({ [euroShooter.id]: { move: { x: 1, z: -0.4 }, shoot: true, shotType: 'euro' }, [euroDef.id]: { move: { x: -0.2, z: 0 }, intenseD: true } });
+  const cloned = createEngine(teams, undefined, JSON.parse(JSON.stringify(euroGame.state)));
+  for (let i = 0; i < 22; i++) {
+    const input = { [euroShooter.id]: { ...cmd, shoot: true, shotType: 'euro' as const }, [euroDef.id]: { ...cmd, contest: true, intenseD: true } };
+    euroGame.step(input);
+    cloned.step(input);
+  }
+  euroGame.step();
+  cloned.step();
+  assert.equal(euroGame.state.shotFeedback?.style, 'Euro step');
+  assert.deepEqual(cloned.state, euroGame.state);
+});

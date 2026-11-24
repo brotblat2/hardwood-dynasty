@@ -369,7 +369,7 @@ const keyboardLabels: Record<keyof KeyboardBindings, string> = {
   up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
   shoot: 'Shoot', pumpFake: 'Pump fake', pass: 'Pass', bouncePass: 'Bounce pass', lobPass: 'Lob pass',
   iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Contest', steal: 'Steal', screen: 'Screen / pick',
-  dribble: 'Dribble move', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
+  dribble: 'Dribble move', intenseD: 'Intense-D (Clamp)', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
 };
 export const keyName = (key: string) => key.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, 'Arrow ');
 

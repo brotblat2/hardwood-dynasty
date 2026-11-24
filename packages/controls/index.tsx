@@ -73,6 +73,7 @@ const TOUCH_BUTTONS = [
   { action: 'bouncePass', label: 'Bounce', accessibleLabel: 'Bounce pass' },
   { action: 'lobPass', label: 'Lob', accessibleLabel: 'Lob pass' },
   { action: 'screen', label: 'Screen', accessibleLabel: 'Set a screen' },
+  { action: 'intenseD', label: 'Clamp', accessibleLabel: 'Intense defense clamp' },
   { action: 'switchPlayer', label: 'Switch', accessibleLabel: 'Switch player' },
   { action: 'steal', label: 'Steal', accessibleLabel: 'Steal' },
   { action: 'contest', label: 'Contest', accessibleLabel: 'Contest or rebound' },
@@ -91,7 +92,7 @@ export type TouchContext = 'offense' | 'offball' | 'defense' | 'loose' | 'freeTh
 const CONTEXT_ACTIONS: Record<TouchContext, readonly TouchAction[]> = {
   offense: ['shoot', 'pass', 'bouncePass', 'lobPass', 'pumpFake', 'dribble', 'screen', 'sprint'],
   offball: ['pass', 'screen', 'switchPlayer', 'sprint'],
-  defense: ['contest', 'steal', 'switchPlayer', 'sprint'],
+  defense: ['contest', 'steal', 'intenseD', 'switchPlayer', 'sprint'],
   loose: ['contest', 'steal', 'switchPlayer', 'shoot', 'sprint'],
   freeThrow: ['shoot'],
 };

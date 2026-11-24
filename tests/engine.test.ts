@@ -395,7 +395,7 @@ test('directional momentum-mismatch dribble triggers ankle-breaker stumble and c
   assert.ok(broke, 'expected ankle-breaker stumble on momentum mismatch');
 });
 
-test('intense-D body-up clamps drives and forces dead-ball pickup', () => {
+test('body-up contact never traps handler in dead dribble, and burst triggers blowby', () => {
   const roster = structuredClone(teams);
   roster[1].roster[0].ratings.perimeter = 95;
   roster[1].roster[0].ratings.strength = 92;
@@ -405,20 +405,52 @@ test('intense-D body-up clamps drives and forces dead-ball pickup', () => {
   const [handler, def] = g.state.players;
   handler.position = { x: 6, z: 0 };
   def.position = { x: 6.75, z: 0 };
-  g.step({ [handler.id]: { move: { x: 1, z: 0 } } }); // enter live dribble
-  let sawClamp = false;
+  g.step({ [handler.id]: { move: { x: 1, z: 0 } } });
+  let sawBump = false;
   for (let i = 0; i < 24; i++) {
     def.position = { x: handler.position.x + 0.72, z: handler.position.z };
     g.step({
       [handler.id]: { move: { x: 1, z: 0 } },
       [def.id]: { move: { x: -0.4, z: 0 }, intenseD: true },
     });
-    if (handler.action?.bodyUp === 'clamp') sawClamp = true;
+    if (handler.action?.bodyUp === 'clamp' || handler.action?.bodyUp === 'ride') sawBump = true;
   }
-  assert.ok(sawClamp, 'should register chest-to-chest clamp');
-  assert.equal(handler.action?.deadDribble, true);
-  assert.equal(handler.action?.ballState, 'dead');
-  assert.equal(g.state.callout?.text, 'CLAMPED!');
+  assert.ok(sawBump, 'should still register physical body-up contact');
+  assert.notEqual(handler.action?.deadDribble, true, 'clamping must not freeze or kill live dribble');
+  assert.equal(handler.action?.ballState, 'live');
+  assert.notEqual(g.state.callout?.text, 'CLAMPED!');
+
+  const g2 = createEngine(structuredClone(teams), { playersPerTeam: 1, seed: 6 });
+  const [h2, d2] = g2.state.players;
+  h2.profile.ratings.handling = 96;
+  h2.profile.ratings.speed = 94;
+  d2.profile.ratings.perimeter = 70;
+  h2.position = { x: 6, z: 0 };
+  d2.position = { x: 6.40, z: 0.72 };
+  let sawBlowby = false;
+  for (let i = 0; i < 8; i++) {
+    d2.position = { x: h2.position.x + 0.40, z: h2.position.z + 0.72 };
+    g2.step({ [h2.id]: { move: { x: 1, z: 0 }, sprint: true } });
+    if (h2.action?.bodyUp === 'blowby') sawBlowby = true;
+  }
+  assert.ok(sawBlowby, 'burst step triggers blowby speed advantage');
+});
+
+test('setup puts point guard at ballhandler spot and dribble moves chain within 18 ticks', () => {
+  const custom = structuredClone(teams);
+  const home = custom[0].roster;
+  [home[0], home[2]] = [home[2], home[0]];
+  const g = createEngine(custom, { playersPerTeam: 5, seed: 10 });
+  const pg = g.state.players.find(p => p.side === 0 && p.profile.position === 'PG')!;
+  assert.equal(g.state.ball.ownerId, pg.id);
+  assert.ok(pg.position.x < -3.5, 'PG starts in backcourt to bring the ball up');
+
+  g.step({ [pg.id]: { move: { x: 1, z: 0 } } });
+  g.step({ [pg.id]: { move: { x: 0, z: 1 }, dribble: true, dribbleDir: { x: 0, z: 1 } } });
+  assert.ok(pg.action?.dribbleMove);
+  for (let i = 0; i < 19; i++) g.step({ [pg.id]: { move: { x: 0.6, z: 0 } } });
+  g.step({ [pg.id]: { move: { x: -1, z: 0 }, dribble: true, dribbleDir: { x: -1, z: 0 } } });
+  assert.equal(pg.action?.dribbleMove, 'stepBack', 'rapid combo move chains after 18 ticks');
 });
 
 test('pump fake keeps triple-threat live, locks live dribble dead, and triggers fly-by', () => {

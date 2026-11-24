@@ -106,10 +106,10 @@ export function computeGreenWindow(
   hotStreak = false,
 ): { greenWindow: number; isGreen: boolean } {
   const greenWindow = clamp(
-    0.040 + (rating - 60) * 0.00072 - pressure * 0.032 + (catchAndShoot ? 0.011 : 0) + (rhythm ? 0.012 : 0) + (hotStreak ? 0.008 : 0),
-    0.015,
-    0.084,
+    0.068 + (rating - 60) * 0.00095 - pressure * 0.024 + (catchAndShoot ? 0.015 : 0) + (rhythm ? 0.015 : 0) + (hotStreak ? 0.010 : 0),
+    0.028,
+    0.12,
   );
-  const isGreen = Math.abs(error) <= greenWindow && pressure < 0.38 && contact < 0.30;
+  const isGreen = Math.abs(error) <= greenWindow && pressure < 0.46 && contact < 0.30;
   return { greenWindow, isGreen };
 }

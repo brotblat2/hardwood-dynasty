@@ -88,7 +88,7 @@ type Runtime = {
   pendingAndOne?: { shooter: string; points: number };
 };
 type Snapshot = GameState & { ball: PhysicalBall; simulation: Runtime };
-const shape: Vec2[] = [{ x: -4, z: 0 }, { x: 4, z: -5.8 }, { x: 5, z: 5.8 }, { x: 8.5, z: -3 }, { x: 10.3, z: 2.1 }];
+const shape: Vec2[] = [{ x: -5.6, z: 0 }, { x: 3.4, z: -5.8 }, { x: 4.4, z: 5.8 }, { x: 6.4, z: -2.6 }, { x: 7.2, z: 2.2 }];
 
 export function createEngine(teams: [Team, Team], config: GameConfig = {}, initialState?: GameState): Engine {
   const settings = { mode: 'regulation', periods: 4, periodSeconds: 300, playersPerTeam: 5, seed: 17, ...initialState?.config, ...config } satisfies GameConfig;
@@ -121,7 +121,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const wingspan = clamp(Number.isFinite(profile.wingspan) && profile.wingspan! > 0 ? profile.wingspan! : height * 1.035, height * 0.91, height * 1.19);
     const result = { height, mass, wingspan, reach: height * 1.26 + (wingspan - height * 1.035) * 0.58,
       leverage: (mass / 95) ** 0.72 * (0.6 + strength / 155),
-      acceleration: clamp(0.23 * (95 / mass) ** 0.42 * (0.92 + strength / 850), 0.17, 0.285) };
+      acceleration: clamp(0.28 * (95 / mass) ** 0.40 * (0.94 + strength / 850), 0.21, 0.34) };
     bodies.set(profile, result);
     return result;
   }
@@ -166,7 +166,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       .filter(q => q.side !== p.side)
       .sort((a, b) => distance(a.position, p.position) - distance(b.position, p.position))[0];
     const nearestDefDist = nearestDef ? distance(nearestDef.position, p.position) : 99;
-    if (control?.dribble && !dribble.held && !dribble.move && dribble.ballState !== 'dead' && canAct(p.id + '/dribble', 30)) {
+    if (control?.dribble && !dribble.held && !dribble.move && dribble.ballState !== 'dead' && canAct(p.id + '/dribble', 18)) {
       const rawDir = control.dribbleDir && Math.hypot(control.dribbleDir.x, control.dribbleDir.z) > 0.15
         ? control.dribbleDir
         : control.move;
@@ -218,21 +218,32 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
   }
   function setup(side: Side) {
     const s = sign(side);
-    const counters = [0, 0];
     sim.bodyUp = {};
     delete sim.releaseStyle;
-    for (const p of state.players) {
-      const slot = counters[p.side]++;
-      const spot = shape[slot];
-      const x = slot === 0 && half ? 3.8 : spot.x;
-      p.position = { x: (x + (p.side !== side ? (slot === 0 ? 1.95 : 1.1) : 0)) * s, z: spot.z };
-      p.velocity = { x: 0, z: 0 };
-      p.facing = p.side === side ? (s === 1 ? 0 : Math.PI) : (s === 1 ? Math.PI : 0);
-      p.pose = 'idle';
-      delete p.action;
+    let ballOwner: GamePlayer | undefined;
+    for (const pSide of [0, 1] as const) {
+      const teamPlayers = state.players.filter(p => p.side === pSide);
+      if (!teamPlayers.length) continue;
+      let pg = teamPlayers.find(p => p.profile.position === 'PG');
+      if (!pg) {
+        pg = [...teamPlayers].sort((a, b) =>
+          (b.profile.ratings.handling + b.profile.ratings.passing) - (a.profile.ratings.handling + a.profile.ratings.passing)
+        )[0];
+      }
+      const ordered = [pg, ...teamPlayers.filter(p => p !== pg)];
+      ordered.forEach((p, slot) => {
+        const spot = shape[Math.min(slot, shape.length - 1)];
+        const x = slot === 0 && half ? 3.8 : spot.x;
+        const cushion = p.side !== side ? (slot === 0 ? (half ? 1.95 : 3.2) : 1.15) : 0;
+        p.position = { x: (x + cushion) * s, z: spot.z };
+        p.velocity = { x: 0, z: 0 };
+        p.facing = p.side === side ? (s === 1 ? 0 : Math.PI) : (s === 1 ? Math.PI : 0);
+        p.pose = 'idle';
+        delete p.action;
+      });
+      if (pSide === side) ballOwner = ordered[0];
     }
-    const owner = state.players.find(p => p.side === side) ?? state.players[0];
-    hold(owner);
+    hold(ballOwner ?? state.players[0]);
     state.shotClock = sim.resumeClock ?? 24; delete sim.resumeClock;
     state.charge = {};
     sim.lastPass = null;
@@ -301,7 +312,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       sim.jumpContest[p.id] = state.tick + 22;
       p.stamina = Math.max(0, p.stamina - 1.6);
     }
-    if (dribble && dribble.ballState === 'tripleThreat' && norm > 0.35 && !cmd?.dribble && !charge && !cmd?.pumpFake && !posting) {
+    if (dribble && dribble.ballState === 'tripleThreat' && norm > 0.15 && !cmd?.dribble && !charge && !cmd?.pumpFake && !posting) {
       dribble.ballState = 'live';
       if (dribble.adrenaline > 0) {
         sim.burst ??= {};
@@ -315,7 +326,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       const prev = sim.prevMoveDir[p.id];
       if (prev) {
         const dot = prev.x * ux + prev.z * uz;
-        if (dot < 0.2) cutFactor = clamp(0.74 + (dot + 1) * 0.15, 0.74, 0.92);
+        if (dot < 0.2) cutFactor = clamp(0.90 + (dot + 1) * 0.05, 0.90, 0.98);
       }
       sim.prevMoveDir[p.id] = { x: ux, z: uz };
     }
@@ -329,7 +340,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const flyBy = (sim.flyBy?.[p.id] ?? 0) > state.tick;
     const stunAccel = stunned ? 0.48 : stumbling ? 0.62 : flyBy ? 0.70 : 1;
     const bodyUp = sim.bodyUp?.[p.id];
-    const bodyUpFactor = bodyUp === 'clamp' ? 0.56 : bodyUp === 'ride' ? 0.78 : bodyUp === 'blowby' ? 1.12 : 1;
+    const bodyUpFactor = bodyUp === 'clamp' ? 0.78 : bodyUp === 'ride' ? 0.88 : bodyUp === 'blowby' ? 1.16 : 1;
     const deadFactor = deadDribble ? 0.14 : 1;
     const shotIntent = cmd?.shotType ?? sim.gather?.style ?? (rangeToRim < 2.45 && sprint ? 'dunk' : rangeToRim < 2.45 && norm > 0.45 ? 'layup' : undefined);
     const drivingFinish = !!(charge && (shotIntent === 'dunk' || shotIntent === 'layup' || shotIntent === 'euro'));
@@ -338,7 +349,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const physique = body(p);
     p.stamina = clamp(p.stamina + DT * (sprint ? -7 * (physique.mass / 95) ** 0.3 : intenseD && norm > 0.1 ? -1.4 : 3.6), 0, 100);
     const accel = physique.acceleration * stunAccel;
-    const moveRate = norm < 0.08 ? Math.min(0.62, accel * 1.75) : accel;
+    const moveRate = norm < 0.08 ? Math.min(0.68, accel * 1.95) : accel;
     p.velocity.x += (dx / Math.max(1, norm) * speed - p.velocity.x) * moveRate;
     p.velocity.z += (dz / Math.max(1, norm) * speed - p.velocity.z) * moveRate;
     const ballOwner = state.ball.ownerId ? state.players.find(q => q.id === state.ball.ownerId) : undefined;
@@ -599,14 +610,14 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       rhythm,
     }, reach);
     const finishErr = style === 'dunk' ? error * 0.28 : style === 'layup' || style === 'euro' ? error * 0.45 : error;
-    const styleSpreadAdd = style === 'dunk' ? 0.036 : style === 'fadeaway' ? 0.079 : style === 'stepBack' ? 0.072 : style === 'euro' ? 0.064 : 0.061;
+    const styleSpreadAdd = style === 'dunk' ? 0.026 : style === 'layup' ? 0.046 : style === 'euro' ? 0.052 : style === 'stepBack' ? 0.060 : style === 'fadeaway' ? 0.066 : 0.049;
     let spread = clamp(styleSpreadAdd + (75 - rating) * 0.0011 + Math.max(0, range - 2) * 0.0046 +
-      Math.max(0, range - 9.55) * 0.051 + pressure * 0.18 - postAdvantage * 0.92 + Math.abs(finishErr) * 0.22 + (100 - p.stamina) * 0.00072 +
+      Math.max(0, range - 9.55) * 0.051 + pressure * 0.14 - postAdvantage * 0.92 + Math.abs(finishErr) * 0.22 + (100 - p.stamina) * 0.00072 +
       Math.hypot(p.velocity.x, p.velocity.z) * 0.004 + (andOneFoul ? 0.06 : 0), 0.024, 0.72);
     if (catchAndShoot) spread *= 0.82;
     if (offDribble) spread *= 0.90;
     if (rhythm) spread *= 0.88;
-    if (isGreen) spread *= 0.34;
+    if (isGreen) spread *= 0.22;
     const depthBias = finishErr * (style === 'dunk' ? 0.11 : 0.24 + range * 0.026) * (isGreen ? 0.25 : 1);
     const end = aimAt(rim, start, aimRoll, spread, depthBias);
     const duration = style === 'dunk' ? 0.34 : style === 'layup' || style === 'euro' ? 0.52 :
@@ -972,33 +983,23 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
             sim.bodyUp[def.id] = bodyUpKind;
             const atk = sign(owner.side);
             if (bodyUpKind === 'clamp') {
-              if (owner.velocity.x * atk > 0) owner.velocity.x *= 0.55;
-              owner.velocity.z *= 0.65;
+              if (owner.velocity.x * atk > 0) owner.velocity.x *= 0.82;
+              owner.velocity.z *= 0.88;
               def.velocity.x = owner.velocity.x * 0.5;
               def.velocity.z = owner.velocity.z * 0.7;
-              if (dribble.ballState === 'live') {
-                dribble.clampHits = (dribble.clampHits ?? 0) + 1;
-                if (dribble.clampHits >= 20) {
-                  dribble.ballState = 'dead';
-                  dribble.move = undefined;
-                  dribble.clampHits = 0;
-                  state.callout = { tick: state.tick, text: 'CLAMPED!', tone: 'blue', playerId: def.id };
-                }
-              }
             } else if (bodyUpKind === 'ride') {
-              owner.velocity.x *= 0.86;
-              owner.velocity.z *= 0.90;
-              dribble.clampHits = Math.max(0, (dribble.clampHits ?? 0) - 1);
+              owner.velocity.x *= 0.93;
+              owner.velocity.z *= 0.95;
             } else if (bodyUpKind === 'blowby') {
-              owner.velocity.x += atk * 0.38;
-              def.velocity.x *= 0.65;
-              dribble.clampHits = 0;
+              owner.velocity.x += atk * 0.52;
+              def.velocity.x *= 0.58;
             }
+            dribble.clampHits = 0;
           } else {
-            dribble.clampHits = Math.max(0, (dribble.clampHits ?? 0) - 1);
+            dribble.clampHits = 0;
           }
         } else {
-          dribble.clampHits = Math.max(0, (dribble.clampHits ?? 0) - 1);
+          dribble.clampHits = 0;
         }
       }
       const cmd = controls[owner.id];

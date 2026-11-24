@@ -638,10 +638,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       {hud && (hud.ball.ownerId === localPlayer.id ? ((localPlayer.action?.ballState === 'dead' || (localPlayer.action?.hotStreak ?? 0) >= 2) ? <div className="hud-status">
         {localPlayer.action?.ballState === 'dead' && <span className="ball-chip dead">PICKUP</span>}
         {(localPlayer.action?.hotStreak ?? 0) >= 2 && <span className="ball-chip hot">HOT {localPlayer.action?.hotStreak}x</span>}
-      </div> : null) : (localPlayer.action?.intenseD || localPlayer.action?.bodyUp) ? <div className="hud-status">
-        <span className="ball-chip defense">
-          {localPlayer.action?.bodyUp === 'clamp' ? 'CLAMPED' : localPlayer.action?.bodyUp === 'ride' ? 'BODY-UP' : 'TIGHT D'}
-        </span>
+      </div> : null) : localPlayer.action?.intenseD ? <div className="hud-status">
+        <span className="ball-chip defense">TIGHT D</span>
       </div> : null)}
       {event && event.type !== 'pass' && <p>{event.detail ?? ({ score: 'Basket', miss: 'Missed shot', rebound: 'Rebound', steal: 'Steal', block: 'Block', shot: 'Shot attempt', foul: 'Foul', turnover: 'Turnover', period: 'Period ended', assist: 'Assist', timeout: 'Timeout', substitution: 'Substitution' } as Record<string, string>)[event.type]}</p>}
     </div>}

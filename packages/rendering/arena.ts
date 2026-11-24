@@ -317,7 +317,7 @@ function makeJumbotron(indoor: THREE.Group) {
   let lastKey = '';
 
   const housing = new THREE.Group();
-  housing.position.set(0, 8.4, 0);
+  housing.position.set(0, 15.2, 0);
   const darkMetal = new THREE.MeshStandardMaterial({ color: 0x161a1d, metalness: 0.72, roughness: 0.4 });
   box(housing, darkMetal, [3.35, 1.65, 3.35], 0, 0, 0);
   box(housing, darkMetal, [0.42, 4.0, 0.42], 0, 2.7, 0);
@@ -430,15 +430,15 @@ export function makeArena() {
     const table = box(indoor, stage, [3.6, 0.65, 0.62], x, 0.45, 9.76);
     table.castShadow = true;
   }
-  // Overhead rafters, banners & subtle additive spotlight cones
+  // High overhead rafters & back-wall banners clear of camera sightlines
   for (const x of [-12, -4, 4, 12]) {
-    box(indoor, beam, [0.16, 0.24, 24], x, 10.6, -2);
+    box(indoor, beam, [0.16, 0.24, 24], x, 16.5, -2);
   }
   const bannerMat = new THREE.MeshStandardMaterial({ color: 0x20352d, roughness: 0.85 });
   const goldTrim = new THREE.MeshBasicMaterial({ color: 0xd9b86c });
   for (const x of [-9.5, -5.5, 5.5, 9.5]) {
-    box(indoor, bannerMat, [1.25, 2.0, 0.04], x, 9.1, -15.6);
-    box(indoor, goldTrim, [1.25, 0.14, 0.05], x, 8.12, -15.6);
+    box(indoor, bannerMat, [1.25, 2.0, 0.04], x, 9.4, -16.3);
+    box(indoor, goldTrim, [1.25, 0.14, 0.05], x, 8.42, -16.3);
   }
   const jumbotron = makeJumbotron(indoor);
   const crowd = makeCrowd(indoor);

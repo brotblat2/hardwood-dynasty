@@ -73,12 +73,12 @@ type Screen = { screener: string; spot: Vec2; side: number; pop: boolean; starte
 
 function screenCall(owner: GamePlayer, mates: GamePlayer[], foes: GamePlayer[], rim: Vec2, tick: number, manual = false): Screen | undefined {
   const range = distance(owner.position, rim);
-  const minRange = manual ? 2.8 : 4.2;
-  const maxRange = manual ? 11.5 : 9.4;
-  if (range < minRange || range > maxRange || Math.abs(owner.position.z) > (manual ? 6.8 : 5.6)) return;
+  const minRange = manual ? 2.6 : 3.2;
+  const maxRange = manual ? 12.0 : 11.2;
+  if (range < minRange || range > maxRange || Math.abs(owner.position.z) > (manual ? 6.8 : 6.0)) return;
   const marker = bestBy(foes, p => -distance(owner.position, p.position));
-  if (!marker || distance(marker.position, owner.position) > (manual ? 5.5 : 3.8)) return;
-  const screener = bestBy(mates.filter(p => distance(p.position, owner.position) < (manual ? 11 : 7.8)), p =>
+  if (!marker || distance(marker.position, owner.position) > (manual ? 5.8 : 5.2)) return;
+  const screener = bestBy(mates.filter(p => distance(p.position, owner.position) < (manual ? 11.5 : 9.8)), p =>
     (big(p) ? 16 : 0) + (p.profile.ratings.strength ?? 60) * 0.2 + p.profile.ratings.finishing * 0.09 - distance(owner.position, p.position) * 3);
   if (!screener || (!manual && highPostHub(owner) && !big(screener))) return;
   const side = Math.abs(owner.position.z) > 2 ? -Math.sign(owner.position.z) : marker.position.z < owner.position.z ? 1 : -1;
@@ -149,8 +149,24 @@ function offensiveSupport(
     const cut = { x: rim.x - sign * 1.28, z: owner.position.z > 0 ? -1.35 : 1.35 };
     const lane = passingLane(p.position, cut, foes);
     if (lane > 0.65 || distance(p.position, cut) < 2) target = cut;
+  } else if (play === 'motion') {
+    const wave = Math.sin(tick * 0.025 + slot * 1.65);
+    const drift = Math.cos(tick * 0.022 + slot * 1.4);
+    target = {
+      x: clamp(target.x + wave * (corner ? 0.65 : 1.15), -12.6, 12.6),
+      z: clamp(target.z + drift * (corner ? 0.35 : 0.95) * -flank, -7.0, 7.0),
+    };
+    if (Math.sign(owner.position.z || 1) === Math.sign(target.z || 1) && distance(owner.position, target) < 3.4) {
+      target = corner
+        ? { x: rim.x - sign * 5.8, z: flank * 4.4 }
+        : { x: rim.x - sign * 1.5, z: -Math.sign(owner.position.z || 1) * 6.75 };
+    }
+    if (!screen && p.profile.ratings.finishing >= 78 && (tick + slot * 55) % 165 < 42 && distance(owner.position, rim) > 3.5) {
+      const cutSpot = { x: rim.x - sign * 1.35, z: -flank * 1.35 };
+      if (passingLane(p.position, cutSpot, foes) > 0.72) target = cutSpot;
+    }
   }
-  return { move: move(p.position, target), sprint: distance(p.position, target) > 3.1 };
+  return { move: move(p.position, target), sprint: distance(p.position, target) > 2.8 };
 }
 
 function defensiveAssignments(team: GamePlayer[], foes: GamePlayer[], owner: GamePlayer, rim: Vec2, level: number, scheme: DefenseScheme) {
@@ -235,7 +251,7 @@ function defend(p: GamePlayer, owner: GamePlayer, rim: Vec2, state: GameState, l
   if (scheme === 'zone23' && zoneAnchor) {
     target = match && distance(match.position, zoneAnchor) < 2.4 ? mix(zoneAnchor, match.position, 0.65) : zoneAnchor;
   } else {
-    const cushion = scheme === 'press' && onBall ? 0.58 : onBall ? 0.82 + (5 - level) * 0.11 : match && match.profile.ratings.shooting >= 85 ? 0.95 : 1.65;
+    const cushion = scheme === 'press' && onBall ? 0.72 : onBall ? 1.12 + (5 - level) * 0.16 : match && match.profile.ratings.shooting >= 85 ? 1.05 : 1.75;
     target = match ? mix(match.position, rim, Math.min(0.68, cushion / Math.max(1, distance(match.position, rim)))) : mix(owner.position, rim, 0.73);
     if (scheme === 'press' && !onBall) {
       const sign = Math.sign(rim.x);
@@ -258,7 +274,7 @@ function defend(p: GamePlayer, owner: GamePlayer, rim: Vec2, state: GameState, l
   const recklessMove = !!owner.action?.dribbleMove && p.profile.ratings.perimeter + level * 3 < owner.profile.ratings.handling;
   const readyToSteal = onBall && owner.pose !== 'shoot' && !recklessMove &&
     (p.profile.ratings.perimeter + level * 3 > owner.profile.ratings.handling || pressure < 0.82 || !!owner.action?.deadDribble);
-  const stealMod = Math.max(24, (owner.action?.deadDribble ? 78 : 112) - 9 * level);
+  const stealMod = Math.max(48, 220 - 28 * level);
   const pumpFakeBite = owner.pose === 'pumpFake' && (onBall || p === defense.helper) && pressure < 1.95 &&
     noise(p.id, state.tick >> 3, 7) < clamp(0.62 - level * 0.11, 0.08, 0.62);
   const contesting = pumpFakeBite || ((onBall || p === defense.helper || p.id === defense.dropId || (scheme === 'zone23' && pressure < 2.1)) &&
@@ -266,9 +282,9 @@ function defend(p: GamePlayer, owner: GamePlayer, rim: Vec2, state: GameState, l
   return {
     move: move(p.position, target),
     sprint: sprinting,
-    intenseD: onBall && !sprinting && pressure < 2.35 && (halfCourt || owner.position.x * Math.sign(rim.x) > -1.0),
+    intenseD: level >= 2 && onBall && !sprinting && pressure < 2.35 && (halfCourt || owner.position.x * Math.sign(rim.x) > -1.0),
     contest: contesting,
-    steal: (lateFoul && pressure < 1.3) || (readyToSteal && pressure < 1.23 + deadBonus && state.tick % stealMod === Math.floor(noise(p.id, 3, 0) * Math.min(38, stealMod))),
+    steal: (lateFoul && pressure < 1.3) || (readyToSteal && pressure < (level <= 1 ? 0.78 : 1.15) + deadBonus && state.tick % stealMod === Math.floor(noise(p.id, 3, 0) * Math.min(38, stealMod))),
   };
 }
 
@@ -319,7 +335,7 @@ export function createCoach() {
   let holder = '', received = 0, release = -1, lastTick = -1;
   let possession: Side | undefined, gained = 0;
   let attempt: Control['shotType'];
-  let screen: Screen | undefined, screenCalled = false;
+  let screen: Screen | undefined, screenCalled = false, lastScreenEnded = -999;
   let intendedPass: { receiver: string; sender: string; spot: Vec2 } | undefined;
   let lastPasser = '', passes = 0, outletAttempted = false;
   const offensePlays: [OffensePlay, OffensePlay] = ['motion', 'motion'];
@@ -355,6 +371,7 @@ export function createCoach() {
         attempt = undefined;
         screen = undefined;
         screenCalled = false;
+        lastScreenEnded = -999;
       }
       if (state.ball.kind !== 'pass' && (state.ball.kind !== 'held' || ownerId !== intendedPass?.sender)) intendedPass = undefined;
       if (state.phase !== 'live' || state.ball.kind === 'shot') {
@@ -383,17 +400,23 @@ export function createCoach() {
       const activeScheme: DefenseScheme = lateFoul ? 'press' : defenseSchemes[defSide];
 
       const humanCallScreen = owner && userPlayerIds.has(owner.id) && (userControls[owner.id]?.callScreen || userControls[owner.id]?.screen);
+      const autoDelay = owner && userPlayerIds.has(owner.id)
+        ? (owner.position.x * sign > 0.5 ? 10 : 999)
+        : (activePlay === 'pickAndRoll' ? 8 : 16);
+      const readyForNewScreen = !screen && (!screenCalled || state.tick >= lastScreenEnded + 95);
       if (owner && humanCallScreen && state.phase === 'live' && (!screen || !mates.some(p => p.id === screen!.screener && !userPlayerIds.has(p.id)))) {
         screen = screenCall(owner, mates.filter(p => !userPlayerIds.has(p.id)), foes, rim, state.tick, true);
         screenCalled = !!screen;
-      } else if (owner && !transition && !screenCalled && activePlay !== 'iso' && state.phase === 'live' && age >= (activePlay === 'pickAndRoll' ? 8 : 16) && state.shotClock > 5 && release < 0) {
+      } else if (owner && !transition && readyForNewScreen && activePlay !== 'iso' && state.phase === 'live' && age >= autoDelay && state.shotClock > 5 && release < 0) {
         screen = screenCall(owner, mates.filter(p => !userPlayerIds.has(p.id)), foes, rim, state.tick);
         screenCalled = !!screen;
       }
       if (screen) {
         const screener = mates.find(p => p.id === screen?.screener);
-        if (!screener || userPlayerIds.has(screener.id) || screen.planted === undefined && state.tick > screen.started + 94 || screen.planted !== undefined && state.tick > screen.planted + 105) screen = undefined;
-        else if (screen.planted === undefined && distance(screener.position, screen.spot) < 0.48) screen.planted = state.tick;
+        if (!screener || userPlayerIds.has(screener.id) || screen.planted === undefined && state.tick > screen.started + 94 || screen.planted !== undefined && state.tick > screen.planted + 105) {
+          screen = undefined;
+          lastScreenEnded = state.tick;
+        } else if (screen.planted === undefined && distance(screener.position, screen.spot) < 0.48) screen.planted = state.tick;
       }
       const defense = owner && defensiveAssignments(foes, team, owner, rim, level, activeScheme);
       for (const p of state.players) {
@@ -476,7 +499,8 @@ export function createCoach() {
               c.targetId = best.mate.id;
               c.passType = best.lob ? 'lob' : best.lane > 0.76 && best.lane < 1.25 && best.gap < 6.8 ? 'bounce' : 'chest';
             } else if (urgent || (!milkClock && (comfortable && !best || age > 195 && range < 9.1 && (space > 1.2 || age > 285)))) {
-              release = state.tick + Math.max(4, Math.min(Math.round(Math.min(state.clock, state.shotClock) * 60) - 2, 37 + Math.round(variance(p.id) * 43)));
+              const cpuErr = level < 3 ? Math.round((noise(p.id, seed, Math.floor(state.tick / 19)) - 0.5) * (3 - level) * 18) : 0;
+              release = state.tick + Math.max(4, Math.min(Math.round(Math.min(state.clock, state.shotClock) * 60) - 2, 37 + Math.round(variance(p.id) * 43) + cpuErr));
               attempt = shotType(p, rim, foes);
             }
           }

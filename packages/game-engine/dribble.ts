@@ -88,7 +88,7 @@ export function selectDribbleMove(
   const localSide = fz * moveDir.x - fx * moveDir.z;
   const defDist = nearestDef ? distance(nearestDef.position, p.position) : 99;
   const speed = Math.hypot(p.velocity.x, p.velocity.z);
-  const adMult = dribble.adrenaline > 0 ? 1 : 0.72;
+  const adMult = dribble.adrenaline > 0 ? 1 : 0.94;
   const sideFallback: -1 | 1 = Math.abs(localSide) > 0.12 ? (localSide >= 0 ? 1 : -1) : (-dribble.hand as -1 | 1);
   const latUnitX = inputMag > 0.15 ? moveDir.x / inputMag : fz * sideFallback;
   const latUnitZ = inputMag > 0.15 ? moveDir.z / inputMag : -fx * sideFallback;
@@ -110,10 +110,10 @@ export function selectDribbleMove(
       type: 'stepBack',
       dir: dribble.hand,
       toHand: dribble.hand,
-      duration: 24,
+      duration: 20,
       launchAt: 0.72,
-      staminaCost: 2.6,
-      impulse: { x: -attackSign * 2.85 * adMult, z: (p.velocity.z * -0.4) },
+      staminaCost: 2.2,
+      impulse: { x: -attackSign * 3.2 * adMult, z: (p.velocity.z * -0.4) },
     };
   }
 
@@ -123,10 +123,10 @@ export function selectDribbleMove(
       type: 'spin',
       dir,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 26,
+      duration: 22,
       launchAt: 0.7,
-      staminaCost: 3.0,
-      impulse: { x: attackSign * 1.9 * adMult, z: latUnitZ * 2.2 * adMult },
+      staminaCost: 2.4,
+      impulse: { x: attackSign * 2.3 * adMult, z: latUnitZ * 2.5 * adMult },
     };
   }
 
@@ -135,10 +135,10 @@ export function selectDribbleMove(
       type: 'behindBack',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 22,
+      duration: 18,
       launchAt: 0.62,
-      staminaCost: 2.2,
-      impulse: { x: latUnitX * 2.4 * adMult - attackSign * 0.3, z: latUnitZ * 2.4 * adMult },
+      staminaCost: 1.8,
+      impulse: { x: latUnitX * 2.8 * adMult - attackSign * 0.3, z: latUnitZ * 2.8 * adMult },
     };
   }
 
@@ -147,10 +147,10 @@ export function selectDribbleMove(
       type: 'inAndOut',
       dir: dribble.hand,
       toHand: dribble.hand,
-      duration: 20,
+      duration: 18,
       launchAt: 0.65,
-      staminaCost: 2.0,
-      impulse: { x: attackSign * 1.15 * adMult, z: latUnitZ * 2.45 * adMult },
+      staminaCost: 1.6,
+      impulse: { x: attackSign * 1.45 * adMult, z: latUnitZ * 2.75 * adMult },
     };
   }
 
@@ -159,10 +159,10 @@ export function selectDribbleMove(
       type: 'betweenLegs',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 22,
+      duration: 18,
       launchAt: 0.58,
-      staminaCost: 2.2,
-      impulse: { x: attackSign * 0.9 * adMult, z: latUnitZ * 2.65 * adMult },
+      staminaCost: 1.8,
+      impulse: { x: attackSign * 1.2 * adMult, z: latUnitZ * 3.1 * adMult },
     };
   }
 
@@ -171,10 +171,10 @@ export function selectDribbleMove(
       type: 'crossover',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 20,
+      duration: 17,
       launchAt: 0.55,
-      staminaCost: 2.2,
-      impulse: { x: attackSign * 0.85 * adMult, z: latUnitZ * 2.65 * adMult },
+      staminaCost: 1.8,
+      impulse: { x: attackSign * 1.15 * adMult, z: latUnitZ * 3.1 * adMult },
     };
   }
 
@@ -182,10 +182,10 @@ export function selectDribbleMove(
     type: 'hesitation',
     dir: dribble.hand,
     toHand: dribble.hand,
-    duration: 22,
+    duration: 18,
     launchAt: 0.68,
-    staminaCost: 1.6,
-    impulse: { x: attackSign * 1.45 * adMult, z: -fx * dribble.hand * 0.4 * adMult },
+    staminaCost: 1.4,
+    impulse: { x: attackSign * 1.7 * adMult, z: -fx * dribble.hand * 0.45 * adMult },
   };
 }
 
@@ -347,7 +347,7 @@ export function computeDribbleBallPose(
     }
   }
 
-  const frequency = (1.0 + Math.min(0.37, speed * 0.06) + p.profile.ratings.handling * 0.0015) * (active ? 1.18 : 1);
+  const frequency = (1.28 + Math.min(0.45, speed * 0.075) + p.profile.ratings.handling * 0.0018) * (active ? 1.16 : 1);
   dribble.phase = (dribble.phase + dt * frequency) % 1;
   const halfStroke = dribble.phase < 0.5 ? dribble.phase : dribble.phase - 1;
   const height = physique.height * heightScale - BALL_RADIUS;

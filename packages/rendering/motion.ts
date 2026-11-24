@@ -126,19 +126,21 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
     const defense = Math.max(contest, event?.type === 'rebound' || event?.type === 'block' ? jumpArc(age, 0.45) : 0);
     const run = movement * (1 - clamp(jump, 0, 1) * 0.92) * (1 - screen * 0.84) * (1 - stumble * 0.55);
 
+    const dribbleGroove = held && !dm && !charge ? Math.sin(tick * 0.24 + hash) : 0;
     const moveArc = dm ? Math.sin(mp * Math.PI) : 0;
-    const moveRoll = dm === 'crossover' ? mDir * moveArc * 0.24
-      : dm === 'inAndOut' ? mDir * moveArc * 0.28
-      : dm === 'jab' ? mDir * moveArc * 0.18
-      : dm === 'behindBack' ? -mDir * moveArc * 0.14
+    const moveRoll = dm === 'crossover' ? mDir * moveArc * 0.30
+      : dm === 'inAndOut' ? mDir * moveArc * 0.34
+      : dm === 'jab' ? mDir * moveArc * 0.20
+      : dm === 'behindBack' ? -mDir * moveArc * 0.20
       : 0;
-    const moveTilt = dm === 'stepBack' ? -moveArc * 0.22
+    const moveTilt = dm === 'stepBack' ? -moveArc * 0.26
       : dm === 'jab' ? moveArc * 0.18
       : dm === 'spin' ? moveArc * 0.16
       : 0;
-    const moveTwist = dm === 'behindBack' ? mDir * moveArc * 0.46
-      : dm === 'betweenLegs' ? -mDir * moveArc * 0.24
-      : dm === 'inAndOut' ? mDir * moveArc * 0.22
+    const moveTwist = dm === 'behindBack' ? mDir * moveArc * 0.56
+      : dm === 'betweenLegs' ? -mDir * moveArc * 0.30
+      : dm === 'inAndOut' ? mDir * moveArc * 0.26
+      : dm === 'hesitation' ? -mDir * moveArc * 0.18
       : 0;
     const moveCrouch = dm === 'betweenLegs' ? moveArc * 0.22
       : dm === 'stepBack' ? moveArc * 0.18
@@ -154,13 +156,13 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
     const gatherDip = charge > 0 ? clamp(1 - Math.max(0, charge - 0.22) / 0.16, 0, 1) : 0;
     const crouch = movement * 0.09 + screen * 0.12 + gather * (1 - shot) * gatherDip * 0.14 +
       slide * 0.10 + intenseD * 0.15 + bodyUp * 0.12 + postUp * 0.16 + pumpFake * 0.14 +
-      tripleThreat * 0.13 + deadDribble * 0.07 + stumble * 0.18 + moveCrouch;
+      tripleThreat * 0.13 + deadDribble * 0.07 + stumble * 0.18 + moveCrouch + Math.abs(dribbleGroove) * 0.03 * dribble;
     pose.rise = jump + moveRise + (0.008 + (1 - Math.cos(stride * 2)) * 0.023) * run;
     pose.crouch = crouch;
     pose.tilt = run * 0.15 + screen * 0.12 + gather * 0.08 + stealSwipe * 0.28 +
       bodyUp * 0.18 + intenseD * 0.10 + postUp * 0.22 + flyBy * 0.42 + (dunk ? activeShot * 0.24 : 0) -
       (fadeOrStepBack ? activeShot * 0.36 : 0) + moveTilt + stumble * Math.cos(tick * 0.42) * 0.18;
-    pose.roll = -lateral * run * 0.11 + Math.sin(stride) * run * 0.035 + moveRoll + euroWeave + stumble * Math.sin(tick * 0.55) * 0.34;
+    pose.roll = -lateral * run * 0.11 + Math.sin(stride) * run * 0.035 + moveRoll + euroWeave + dribbleGroove * 0.045 * dribble + stumble * Math.sin(tick * 0.55) * 0.34;
     pose.twist = Math.sin(stride) * 0.1 * run + stealSwipe * 0.35 +
       (hookShot ? activeShot * 0.52 : highFinish ? shot * 0.19 : 0) + moveTwist + bodyUp * 0.14 + postUp * 0.26;
 

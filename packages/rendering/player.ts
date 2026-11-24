@@ -423,8 +423,7 @@ export function makePlayerFactory(anisotropy = 2) {
       }
       const action = gamePlayer.action;
       const clamping = action?.bodyUp === 'clamp';
-      const riding = action?.bodyUp === 'ride';
-      clampArc.visible = Boolean(action?.intenseD || clamping || riding);
+      clampArc.visible = Boolean(action?.intenseD);
       if (clampArc.visible) {
         clampArc.rotation.z = -pose.facing;
         clampArcMaterial.color.setHex(clamping ? 0x2e9dff : 0x5ec8ff);

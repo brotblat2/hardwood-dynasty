@@ -89,7 +89,12 @@
 .hd-touch-controls__action--shoot {
   grid-column: 3;
   color: #16120d;
-  background: #f5c46a;
+  background: linear-gradient(to top, #baff93 var(--charge, 0%), #f5c46a var(--charge, 0%));
+}
+
+.hd-touch-controls__action--shoot[data-green='true'] {
+  border-color: #baff93;
+  box-shadow: 0 0 12px rgb(186 255 147 / 75%);
 }
 
 .hd-touch-controls__action:active,

@@ -32,20 +32,20 @@ function profiledGeometry(profile: [number, number][], sides = 20) {
   return new THREE.LatheGeometry(profile.map(([y, radius]) => new THREE.Vector2(radius, y)), sides);
 }
 
-function numberTexture(number: number, textColor: string, abbreviation: string) {
+function numberTexture(number: number, textColor: string, topText: string) {
   const canvas = document.createElement('canvas');
-  canvas.width = 112;
-  canvas.height = 104;
+  canvas.width = 128;
+  canvas.height = 112;
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = textColor;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '900 18px sans-serif';
+  ctx.font = `900 ${topText.length > 6 ? 13 : 16}px sans-serif`;
   ctx.shadowColor = '#0000003d';
   ctx.shadowBlur = 2;
-  ctx.fillText(abbreviation, 56, 15);
-  ctx.font = '900 77px sans-serif';
-  ctx.fillText(String(number), 56, 62);
+  ctx.fillText(topText, 64, 16, 118);
+  ctx.font = '900 76px sans-serif';
+  ctx.fillText(String(number), 64, 68);
   return canvasTexture(canvas, 2);
 }
 
@@ -77,6 +77,7 @@ export function makePlayerFactory() {
   const shadowGeometry = new THREE.PlaneGeometry(1.65, 1.35);
   const chargeGreen = new THREE.Color(0xbaff93);
   const clockGold = new THREE.Color(0xffca5d);
+  const lateRed = new THREE.Color(0xff7d7c);
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
@@ -197,12 +198,18 @@ export function makePlayerFactory() {
     ellipsoid(kit, piping, [0.186, 0.021, 0.117], [0, 1.183, 0]);
 
     const ink = uniform.getHSL({ h: 0, s: 0, l: 0 }).l > 0.58 ? '#151e21' : '#f7f2df';
-    const digits = numberTexture(player.profile.number, ink, team.abbreviation);
-    const numberMaterial = new THREE.MeshBasicMaterial({
-      map: digits, transparent: true, depthWrite: false, alphaTest: 0.2, polygonOffset: true, polygonOffsetFactor: -2,
+    const parts = player.profile.name.trim().split(/\s+/);
+    const lastName = (parts.length > 1 ? parts.slice(1).join(' ') : parts[0]).toUpperCase();
+    const frontDigits = numberTexture(player.profile.number, ink, team.abbreviation);
+    const backDigits = numberTexture(player.profile.number, ink, lastName);
+    const frontMaterial = new THREE.MeshBasicMaterial({
+      map: frontDigits, transparent: true, depthWrite: false, alphaTest: 0.2, polygonOffset: true, polygonOffsetFactor: -2,
+    });
+    const backMaterial = new THREE.MeshBasicMaterial({
+      map: backDigits, transparent: true, depthWrite: false, alphaTest: 0.2, polygonOffset: true, polygonOffsetFactor: -2,
     });
     for (const side of [-1, 1]) {
-      const label = new THREE.Mesh(numberGeometry, numberMaterial);
+      const label = new THREE.Mesh(numberGeometry, side === 1 ? frontMaterial : backMaterial);
       label.position.set(0, 1.493, side * 0.153);
       label.rotation.y = side < 0 ? Math.PI : 0;
       kit.add(label);
@@ -278,7 +285,7 @@ export function makePlayerFactory() {
       if (meter.visible) {
         const fraction = Math.min(charge / 1.2, 1);
         meter.geometry.setDrawRange(0, Math.max(6, Math.round(fraction * 64) * 6));
-        meterMaterial.color.copy(Math.abs(charge - 0.62) < 0.085 ? chargeGreen : clockGold);
+        meterMaterial.color.copy(Math.abs(charge - 0.62) < 0.065 ? chargeGreen : charge > 0.72 ? lateRed : clockGold);
       }
 
       model.position.y = pose.rise * normalScale;
@@ -326,8 +333,9 @@ export function makePlayerFactory() {
     }
 
     function dispose() {
-      for (const mat of [skin, skinShade, hair, eyeWhite, jersey, piping, shorts, shoes, sole, socks, laces, numberMaterial, meterMaterial]) mat.dispose();
-      digits.dispose();
+      for (const mat of [skin, skinShade, hair, eyeWhite, jersey, piping, shorts, shoes, sole, socks, laces, frontMaterial, backMaterial, meterMaterial]) mat.dispose();
+      frontDigits.dispose();
+      backDigits.dispose();
       for (const geometry of bakedGeometries) geometry.dispose();
       meter.geometry.dispose();
       body.traverse((mesh) => {

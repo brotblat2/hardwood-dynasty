@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { COURT } from '../contracts/index.ts';
-import type { GameState } from '../contracts/index.ts';
+import type { GameState, Team } from '../contracts/index.ts';
 import { netResponse } from './equipment.ts';
 import { canvasTexture, seededRandom } from './court.ts';
 import { mergeStaticMeshes } from './geometry.ts';
@@ -15,6 +15,7 @@ function box(parent: THREE.Object3D, material: THREE.Material, size: [number, nu
 export function makeHoops() {
   const result = new THREE.Group();
   const nets: { side: number; data: THREE.BufferAttribute; rest: Float32Array; needsReset: boolean }[] = [];
+  const netMaterials: THREE.LineBasicMaterial[] = [];
   const paint = new THREE.MeshStandardMaterial({ color: 0x172629, roughness: 0.62, metalness: 0.26 });
   const padding = new THREE.MeshStandardMaterial({ color: 0x284837, roughness: 0.86 });
   const gray = new THREE.MeshStandardMaterial({ color: 0x93a5a4, roughness: 0.34, metalness: 0.63 });
@@ -23,6 +24,33 @@ export function makeHoops() {
     color: 0xb3cacc, opacity: 0.23, transparent: true, depthWrite: false, roughness: 0.25, metalness: 0.03,
   });
   const rimMaterial = new THREE.MeshStandardMaterial({ color: 0xe55726, metalness: 0.27, roughness: 0.35 });
+
+  const clockCanvas = document.createElement('canvas');
+  clockCanvas.width = 160;
+  clockCanvas.height = 112;
+  const clockCtx = clockCanvas.getContext('2d')!;
+  const clockTexture = canvasTexture(clockCanvas, 2);
+  const clockMaterial = new THREE.MeshBasicMaterial({ map: clockTexture });
+  const clockGeometry = new THREE.PlaneGeometry(0.50, 0.35);
+  let lastClockKey = '';
+  const drawShotClock = (seconds: number, buzzer: boolean) => {
+    const key = `${seconds}:${buzzer ? 1 : 0}`;
+    if (key === lastClockKey) return;
+    lastClockKey = key;
+    clockCtx.fillStyle = '#0e1112';
+    clockCtx.fillRect(0, 0, 160, 112);
+    clockCtx.strokeStyle = buzzer ? '#ff4a44' : '#3a4240';
+    clockCtx.lineWidth = buzzer ? 10 : 4;
+    clockCtx.strokeRect(4, 4, 152, 104);
+    clockCtx.fillStyle = buzzer || seconds <= 5 ? '#ff554c' : '#ffba52';
+    clockCtx.font = '900 72px monospace';
+    clockCtx.textAlign = 'center';
+    clockCtx.textBaseline = 'middle';
+    clockCtx.fillText(String(seconds).padStart(2, '0'), 80, 58);
+    clockTexture.needsUpdate = true;
+  };
+  drawShotClock(24, false);
+
   for (const sign of [-1, 1]) {
     const rimX = sign * COURT.rimX;
     const h = COURT.rimHeight;
@@ -37,6 +65,10 @@ export function makeHoops() {
     brace.rotation.z = -sign * 0.35;
     const clock = box(result, paint, [0.16, 0.40, 0.55], boardX + sign * 0.09, h + 1.20, 0);
     clock.castShadow = true;
+    const clockFace = new THREE.Mesh(clockGeometry, clockMaterial);
+    clockFace.position.set(boardX + sign * 0.008, h + 1.20, 0);
+    clockFace.rotation.y = sign > 0 ? -Math.PI / 2 : Math.PI / 2;
+    result.add(clockFace);
     box(result, padding, [0.12, 0.075, 1.9], boardX, h - 0.075, 0);
     const board = box(result, glass, [0.055, 1.055, 1.82], boardX, h + 0.46, 0);
     board.renderOrder = 1;
@@ -77,12 +109,21 @@ export function makeHoops() {
     data.setUsage(THREE.DynamicDrawUsage);
     net.setAttribute('position', data);
     nets.push({ side: sign, data, rest, needsReset: false });
-    result.add(new THREE.LineSegments(net, new THREE.LineBasicMaterial({ color: 0xf4eddc, transparent: true, opacity: 0.83 })));
+    const netMat = new THREE.LineBasicMaterial({ color: 0xf4eddc, transparent: true, opacity: 0.83 });
+    netMaterials.push(netMat);
+    result.add(new THREE.LineSegments(net, netMat));
   }
   mergeStaticMeshes(result, true);
   return {
     group: result,
+    setOutdoor(blacktop: boolean) {
+      const color = blacktop ? 0xb9c5c4 : 0xf4eddc;
+      for (const mat of netMaterials) mat.color.setHex(color);
+    },
     animate(state: GameState) {
+      const seconds = Math.max(0, Math.ceil(state.shotClock));
+      const buzzer = state.shotClock <= 0 || (state.config.mode === 'regulation' && state.clock <= 0);
+      drawShotClock(seconds, buzzer);
       for (const net of nets) {
         const movement = netResponse(state, net.side);
         if (!movement.drop && !movement.flare && !movement.x && !movement.z && !net.needsReset) continue;
@@ -103,23 +144,31 @@ export function makeHoops() {
   };
 }
 
-function makeLEDTexture() {
+function makeLEDTexture(homeTeam?: Team) {
   const canvas = document.createElement('canvas');
   canvas.width = 2048;
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#112e29';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#b7c9a5';
+  if (homeTeam) {
+    ctx.fillStyle = homeTeam.color;
+    ctx.globalAlpha = 0.26;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = '#d7e6c9';
   ctx.font = '800 26px sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
+  const primary = homeTeam ? `${homeTeam.city}  ${homeTeam.name}`.toUpperCase() : 'HARDWOOD  ARENA';
+  const accent = homeTeam ? homeTeam.accent : '#bdab6b';
   for (let i = 0; i < 5; i++) {
     const center = 205 + 409 * i;
-    ctx.fillText(i % 2 ? 'HARDWOOD  DYNASTY' : 'HARDWOOD  ARENA', center, 34);
-    ctx.fillStyle = '#bdab6b';
+    ctx.fillText(i % 2 ? 'HARDWOOD  DYNASTY' : primary, center, 34, 370);
+    ctx.fillStyle = accent;
     ctx.fillRect(center + 202, 25, 2, 17);
-    ctx.fillStyle = '#b7c9a5';
+    ctx.fillStyle = '#d7e6c9';
   }
   ctx.fillStyle = '#d8f5d221';
   for (let i = 0; i < canvas.height; i += 2) ctx.fillRect(0, i, canvas.width, 1);
@@ -237,7 +286,9 @@ export function makeArena() {
     box(indoor, beam, [0.045, 1.16, 0.045], x - 0.3, 0.65, -9.68);
     box(indoor, beam, [0.045, 1.16, 0.045], x + 0.3, 0.65, -9.68);
   }
-  const led = new THREE.MeshBasicMaterial({ map: makeLEDTexture() });
+  let ledTeamId = '';
+  let ledTexture = makeLEDTexture();
+  const led = new THREE.MeshBasicMaterial({ map: ledTexture });
   box(indoor, stage, [28.8, 0.78, 0.48], 0, 0.43, -9.23);
   const ledBoard = new THREE.Mesh(new THREE.PlaneGeometry(28.6, 0.6), led);
   ledBoard.position.set(0, 0.45, -8.985);
@@ -295,6 +346,16 @@ export function makeArena() {
     setOutdoor(value: boolean) {
       indoor.visible = !value;
       outdoor.visible = value;
+    },
+    setTeam(homeTeam?: Team) {
+      const nextId = homeTeam?.id ?? '';
+      if (nextId === ledTeamId) return;
+      ledTeamId = nextId;
+      const nextTexture = makeLEDTexture(homeTeam);
+      led.map = nextTexture;
+      led.needsUpdate = true;
+      ledTexture.dispose();
+      ledTexture = nextTexture;
     },
     animate(time: number, cheer: number) {
       if (indoor.visible) crowd(time, cheer);

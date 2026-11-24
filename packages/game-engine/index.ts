@@ -1,6 +1,6 @@
 import { attackSign, COURT, TICK_RATE } from '../contracts/index.ts';
-import type { Control, Engine, GameConfig, GameEvent, GamePlayer, GameState, Player, Side, Team, Vec2, Vec3 } from '../contracts/index.ts';
-import { advanceBall, BALL_RADIUS, GRAVITY, RIM_CLEARANCE, vector as at, velocityFor } from './ball.ts';
+import type { Control, ContestLevel, Engine, GameConfig, GameEvent, GamePlayer, GameState, OffensePlay, DefenseScheme, Player, ShotTimingGrade, Side, Team, Vec2, Vec3 } from '../contracts/index.ts';
+import { advanceBall, BALL_RADIUS, bankVelocityFor, BOARD_HALF_DEPTH, BOARD_OFFSET, bouncePassVelocity, GRAVITY, RIM_CLEARANCE, vector as at, velocityFor } from './ball.ts';
 import type { PhysicalBall } from './ball.ts';
 
 const DT = 1 / TICK_RATE;
@@ -11,10 +11,40 @@ const LIMIT_Z = COURT.width / 2 - 0.32;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const distance = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.z - b.z);
 const opposite = (s: Side): Side => s === 0 ? 1 : 0;
+
+export function selectPassTarget(
+  passer: GamePlayer,
+  teammates: readonly GamePlayer[],
+  aim: Vec2,
+  attackDirection = 1,
+  opponents?: readonly GamePlayer[],
+): string | undefined {
+  const magnitude = Math.hypot(aim.x, aim.z);
+  const candidates = teammates.filter(q => q.side === passer.side && q.id !== passer.id);
+  if (!candidates.length || !Number.isFinite(magnitude) || magnitude < 0.22) return undefined;
+  let best: string | undefined;
+  let bestScore = -Infinity;
+  for (const teammate of candidates) {
+    const dx = teammate.position.x - passer.position.x;
+    const dz = teammate.position.z - passer.position.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.01) continue;
+    const alignment = (dx * aim.x + dz * aim.z) / (d * magnitude);
+    if (alignment < 0.25) continue;
+    const openBonus = opponents?.length ? Math.min(2.2, Math.min(...opponents.map(o => distance(teammate.position, o.position))) * 0.45) : 0;
+    const score = alignment * 6.5 - d * 0.10 + openBonus + dx * attackDirection * 0.04;
+    if (score > bestScore) {
+      bestScore = score;
+      best = teammate.id;
+    }
+  }
+  return best;
+}
+
 type ShotStyle = NonNullable<Control['shotType']>;
 type BaseFlight = { from: string; age: number };
-type ShotFlight = BaseFlight & { kind: 'shot'; points: number; throughRim?: boolean };
-type PassFlight = BaseFlight & { kind: 'pass'; target: string; duration: number; bounce: boolean; lob: boolean; floorTime?: number };
+type ShotFlight = BaseFlight & { kind: 'shot'; points: number; throughRim?: boolean; andOne?: boolean; fouled?: boolean };
+type PassFlight = BaseFlight & { kind: 'pass'; target: string; duration: number; bounce: boolean; lob: boolean; alleyOop?: boolean; floorTime?: number };
 type Flight = ShotFlight | PassFlight;
 type LegacyFlight = BaseFlight & { kind?: undefined; points: number; target?: string; duration: number; bounce: boolean };
 type Gather = { ownerId: string; height: number; handOffset: number; approach: number; sprint: boolean; backward: boolean; style?: ShotStyle };
@@ -23,12 +53,21 @@ type Dribble = {
   crossover?: { traveled: number; floorAt: number };
 };
 type Runtime = {
-  free?: { shooter: string; remaining: number; startTick: number; waiting: boolean };
+  free?: { shooter: string; remaining: number; total?: number; startTick: number; waiting: boolean; andOne?: boolean };
   resumeClock?: number; timeouts?: [number, number]; crossed?: boolean; backcourtTicks?: number;
   seed: number; flight: Flight | null; lastPass: { from: string; to: string; tick: number } | null;
   locks: Record<string, number>; deadUntil: number; inbound: Side; rimTouched: boolean;
   pendingRebound?: boolean; deadBallMotion?: boolean; dribble?: Dribble; gather?: Gather;
   release?: { playerId: string; until: number };
+  teamFouls?: [number, number];
+  burst?: Record<string, number>;
+  stun?: Record<string, number>;
+  jumpContest?: Record<string, number>;
+  pumpFake?: Record<string, number>;
+  stealPose?: Record<string, number>;
+  lastDribble?: Record<string, number>;
+  contestHeld?: Record<string, boolean>;
+  pendingAndOne?: { shooter: string; points: number };
 };
 type Snapshot = GameState & { ball: PhysicalBall; simulation: Runtime };
 const shape: Vec2[] = [{ x: -4, z: 0 }, { x: 4, z: -5.8 }, { x: 5, z: 5.8 }, { x: 8.5, z: -3 }, { x: 10.3, z: 2.1 }];
@@ -37,11 +76,13 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
   const settings = { mode: 'regulation', periods: 4, periodSeconds: 300, playersPerTeam: 5, seed: 17, ...initialState?.config, ...config } satisfies GameConfig;
   const half = settings.halfCourt ?? settings.mode === 'blacktop';
   const sign = (side: Side) => half ? 1 : attackSign(side);
-  const runtime: Runtime = { seed: settings.seed >>> 0, flight: null, lastPass: null, locks: {}, deadUntil: 0, inbound: 0, rimTouched: false };
+  const runtime: Runtime = { seed: settings.seed >>> 0, flight: null, lastPass: null, locks: {}, deadUntil: 0, inbound: 0, rimTouched: false, teamFouls: [0, 0] };
   const state: Snapshot = initialState ? Object.assign({ simulation: runtime }, structuredClone(initialState), { config: settings }) :
     { teams, config: settings, tick: 0, period: 1, clock: settings.periodSeconds, shotClock: 24, phase: 'live', score: [0, 0], possession: 0,
-      players: [], ball: { position: at(0, 1, 0), velocity: at(0, 0, 0), kind: 'held', ownerId: null }, charge: {}, events: [], simulation: runtime };
+      players: [], ball: { position: at(0, 1, 0), velocity: at(0, 0, 0), kind: 'held', ownerId: null }, charge: {}, events: [],
+      teamFouls: [0, 0], freeThrow: null, shotFeedback: null, simulation: runtime };
   const sim = state.simulation;
+  sim.teamFouls ??= state.teamFouls ?? [0, 0];
   const initialFlight = sim.flight as Flight | LegacyFlight | null;
   if (initialFlight && initialFlight.kind === undefined) {
     const { from, age, points, target, duration, bounce } = initialFlight;
@@ -107,7 +148,26 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     }
     if (control?.dribble && !dribble.held && !dribble.crossover && canAct(p.id + '/dribble', 34)) {
       dribble.crossover = { traveled: 0, floorAt: (dribble.phase < 0.5 ? 0.5 : 1.5) - dribble.phase };
-      p.stamina = Math.max(0, p.stamina - 1.2);
+      p.stamina = Math.max(0, p.stamina - 2.2);
+      sim.lastDribble ??= {};
+      sim.lastDribble[p.id] = state.tick;
+      sim.burst ??= {};
+      sim.burst[p.id] = state.tick + 24;
+      if (control.move.x * sign(p.side) < -0.35) {
+        p.velocity.x -= sign(p.side) * 2.8;
+        p.velocity.z *= 0.6;
+      } else {
+        const dirZ = Math.abs(control.move.z) > 0.2 ? Math.sign(control.move.z) : -dribble.hand;
+        p.velocity.z += dirZ * 2.6;
+        p.velocity.x += sign(p.side) * 0.85;
+      }
+      const nearestDef = state.players
+        .filter(q => q.side !== p.side && distance(q.position, p.position) < 1.65)
+        .sort((a, b) => distance(a.position, p.position) - distance(b.position, p.position))[0];
+      if (nearestDef && random() < clamp(0.18 + (p.profile.ratings.handling - nearestDef.profile.ratings.perimeter) * 0.008, 0.05, 0.55)) {
+        sim.stun ??= {};
+        sim.stun[nearestDef.id] = state.tick + 22;
+      }
     }
     dribble.held = !!control?.dribble;
     const speed = Math.hypot(p.velocity.x, p.velocity.z);
@@ -204,16 +264,38 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const sprint = !!cmd?.sprint && norm > 0.1 && p.stamina > 8;
     const owner = state.ball.ownerId === p.id;
     const charge = owner && (cmd?.shoot || state.charge[p.id]);
-    const speed = (3.5 + p.profile.ratings.speed * 0.024) * (sprint ? 1.46 : 1) * (owner ? 0.94 : 1) * (charge ? 0.24 : cmd?.screen ? 0.12 : 1);
+    const settingScreen = !!cmd?.screen && !cmd?.callScreen;
+    sim.contestHeld ??= {};
+    const contesting = !!cmd?.contest;
+    const wasContesting = !!sim.contestHeld[p.id];
+    sim.contestHeld[p.id] = contesting;
+    if (contesting && !wasContesting && canAct(p.id + '/contest', 30)) {
+      sim.jumpContest ??= {};
+      sim.jumpContest[p.id] = state.tick + 22;
+      p.stamina = Math.max(0, p.stamina - 1.6);
+    }
+    const staminaFactor = p.stamina < 35 ? 0.84 + (p.stamina / 35) * 0.16 : 1;
+    const burstFactor = (sim.burst?.[p.id] ?? 0) > state.tick ? 1.18 : 1;
+    const contestSlow = contesting ? 0.70 : 1;
+    const stunAccel = (sim.stun?.[p.id] ?? 0) > state.tick ? 0.48 : 1;
+    const speed = (3.5 + p.profile.ratings.speed * 0.024) * staminaFactor * (sprint ? 1.46 : 1) * burstFactor * (owner ? 0.94 : 1) * (charge ? 0.24 : settingScreen ? 0.12 : contestSlow);
     const physique = body(p);
     p.stamina = clamp(p.stamina + DT * (sprint ? -7 * (physique.mass / 95) ** 0.3 : 3.6), 0, 100);
-    p.velocity.x += (dx / Math.max(1, norm) * speed - p.velocity.x) * physique.acceleration;
-    p.velocity.z += (dz / Math.max(1, norm) * speed - p.velocity.z) * physique.acceleration;
+    const accel = physique.acceleration * stunAccel;
+    p.velocity.x += (dx / Math.max(1, norm) * speed - p.velocity.x) * accel;
+    p.velocity.z += (dz / Math.max(1, norm) * speed - p.velocity.z) * accel;
+    if (charge && (sim.gather?.style === 'fadeaway' || sim.gather?.backward)) {
+      p.velocity.x -= sign(p.side) * 0.16;
+    }
     p.position.x = clamp(p.position.x + p.velocity.x * DT, half ? 0.32 : -LIMIT_X, LIMIT_X);
     p.position.z = clamp(p.position.z + p.velocity.z * DT, -LIMIT_Z, LIMIT_Z);
     if (norm > 0.08) p.facing = Math.atan2(dz, dx);
     const released = sim.release?.playerId === p.id && sim.release.until > state.tick;
-    p.pose = charge || released ? 'shoot' : cmd?.contest ? 'contest' : cmd?.screen ? 'screen' : owner ? 'dribble' : norm > 0.08 ? 'run' : 'idle';
+    const jumpContesting = (sim.jumpContest?.[p.id] ?? 0) > state.tick;
+    const pumpFaking = (sim.pumpFake?.[p.id] ?? 0) > state.tick;
+    const stealing = (sim.stealPose?.[p.id] ?? 0) > state.tick;
+    const sliding = !owner && p.side !== state.possession && norm > 0.08 && !sprint && state.ball.ownerId !== null && distance(p.position, state.ball.position) < 3.6;
+    p.pose = pumpFaking ? 'pumpFake' : stealing ? 'steal' : charge || released ? 'shoot' : contesting || jumpContesting ? 'contest' : settingScreen ? 'screen' : owner ? 'dribble' : sliding ? 'slide' : norm > 0.08 ? 'run' : 'idle';
   }
   function separate() {
     for (let i = 0; i < state.players.length; i++) for (let j = i + 1; j < state.players.length; j++) {
@@ -261,9 +343,10 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     return p.profile.position === 'PF' || p.profile.position === 'C' ? 'hook' : 'floater';
   }
   function releasePosition(p: GamePlayer, range: number, style: ShotStyle, approach: number) {
-    const height = style === 'dunk' ? dunkReach(p, approach) - 0.015 : body(p).reach + (style === 'layup' ? 0.20 : 0.11);
-    const forward = Math.min(style === 'dunk' ? 0.47 : 0.23, Math.max(0, range - 0.05));
-    return localBall(p, forward, style === 'dunk' ? 0.036 : 0.068, height);
+    const height = style === 'dunk' ? dunkReach(p, approach) - 0.015 : body(p).reach + (style === 'layup' ? 0.20 : style === 'hook' ? 0.16 : 0.11);
+    const forward = Math.min(style === 'dunk' ? 0.52 : 0.23, Math.max(0, range - 0.05));
+    const lateral = style === 'dunk' ? 0.036 : style === 'hook' ? 0.26 * (p.position.z >= 0 ? -1 : 1) : 0.068;
+    return localBall(p, forward, lateral, height);
   }
   function aimAt(rim: Vec3, start: Vec3, roll: number, spread: number, depthBias: number) {
     const radius = Math.sqrt(-2 * Math.log1p(-roll)) * spread;
@@ -279,8 +362,9 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const horizontal = Math.max(0.01, Math.hypot(velocity.x, velocity.z));
     return at(-velocity.z * speed / horizontal, 0, velocity.x * speed / horizontal);
   }
-  function startFree(p: GamePlayer, attempts: number) {
-    sim.free = { shooter: p.id, remaining: attempts, startTick: state.tick, waiting: true };
+  function startFree(p: GamePlayer, attempts: number, andOne = false) {
+    sim.free = { shooter: p.id, remaining: attempts, total: attempts, startTick: state.tick, waiting: true, ...(andOne ? { andOne: true } : {}) };
+    state.freeThrow = { shooterId: p.id, remaining: attempts, total: attempts, ...(andOne ? { andOne: true } : {}) };
     dead(p.side);
   }
   function chargeShot(p: GamePlayer, control: Control) {
@@ -329,16 +413,19 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     event('shot', p.side, p, { points: 1, detail: 'Free throw' });
     launch(p, start, velocity, backspin(velocity, 10), { kind: 'shot', from: p.id, age: 0, points: 1 });
   }
-  function shoot(p: GamePlayer, charge: number, controls: Readonly<Record<string, Control>>) {
+  function shoot(p: GamePlayer, charge: number, controls: Readonly<Record<string, Control>>, detailOverride?: string) {
     const rim = at(sign(p.side) * COURT.rimX, COURT.rimHeight, 0);
     const range = distance(p.position, rim);
     const defenders = state.players.filter(q => q.side !== p.side);
     const closest = defenders.reduce<GamePlayer | undefined>((a, q) => !a || distance(p.position, q.position) < distance(p.position, a.position) ? q : a, undefined);
     const reachAdvantage = (q: GamePlayer) => clamp(body(q).reach - body(p).reach, -0.65, 0.65);
-    const pressure = defenders.reduce((max, q) => {
+    const isStunned = (q: GamePlayer) => (sim.stun?.[q.id] ?? 0) > state.tick;
+    const isContesting = (q: GamePlayer) => !!controls[q.id]?.contest || (sim.jumpContest?.[q.id] ?? 0) > state.tick;
+    const rawPressure = defenders.reduce((max, q) => {
       const advantage = reachAdvantage(q);
       const proximity = clamp(1 - distance(q.position, p.position) / (2.3 + advantage * 0.55), 0, 1);
-      return Math.max(max, proximity * (controls[q.id]?.contest ? 0.54 + advantage * 0.3 : 0.16 + advantage * 0.09));
+      const base = proximity * (isContesting(q) ? 0.54 + advantage * 0.3 : 0.16 + advantage * 0.09);
+      return Math.max(max, base * (isStunned(q) ? 0.45 : 1));
     }, 0);
     const contact = range < 3.2 && closest ? clamp(1 - distance(closest.position, p.position) / 1.55, 0, 1) : 0;
     const postAdvantage = closest ? clamp(body(p).leverage - body(closest).leverage, -0.8, 0.8) * contact * 0.24 : 0;
@@ -356,25 +443,64 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       backward: (cmd?.move.x ?? 0) * sign(p.side) < -0.55 || !!gather?.backward });
     const label = { dunk: 'Dunk', layup: 'Layup', floater: 'Floater', hook: 'Hook', fadeaway: 'Fadeaway', jump: 'Jump shot' }[style];
     if (style === 'fadeaway') p.velocity.x -= sign(p.side) * 1.5;
-    const timing = precision > 0.85 ? 'Excellent' : charge < IDEAL_RELEASE ? 'Early' : 'Late';
-    if (settings.mode === 'regulation' && closest && controls[closest.id]?.contest && distance(closest.position, p.position) < 0.98 && random() < 0.085) {
-      event('foul', closest.side, closest, { detail: 'Shooting foul · ' + points + ' free throws' });
-      startFree(p, points); return;
+    if (style === 'dunk') p.stamina = Math.max(0, p.stamina - 3.2);
+    const stylePressureMult = style === 'dunk' ? 0.55 : style === 'fadeaway' ? 0.62 : 1;
+    const pressure = rawPressure * stylePressureMult;
+    const rating = range < 3.2 ? p.profile.ratings.finishing : p.profile.ratings.shooting;
+    const greenWindow = clamp(0.036 + (rating - 60) * 0.0007 - pressure * 0.025, 0.018, 0.068);
+    const isGreen = Math.abs(error) <= greenWindow && pressure < 0.38 && contact < 0.30;
+    const timing: ShotTimingGrade = isGreen ? 'Green' : precision > 0.85 ? 'Excellent' :
+      Math.abs(error) < 0.16 ? (error < 0 ? 'Slightly Early' : 'Slightly Late') : error < 0 ? 'Early' : 'Late';
+    const contestLabel: ContestLevel = pressure < 0.12 ? 'Open' : pressure < 0.28 ? 'Light' : pressure < 0.48 ? 'Tight' : 'Smothered';
+    let andOneFoul = false;
+    if (settings.mode === 'regulation' && closest && isContesting(closest) && distance(closest.position, p.position) < 0.98 && random() < 0.085) {
+      sim.teamFouls ??= [0, 0];
+      sim.teamFouls[closest.side]++;
+      state.teamFouls = [...sim.teamFouls];
+      const canAndOne = style !== 'jump' && precision > 0.72 && (p.profile.ratings.finishing >= 80 || postAdvantage > 0.08);
+      if (canAndOne && random() < 0.42) {
+        andOneFoul = true;
+      } else {
+        event('foul', closest.side, closest, { detail: 'Shooting foul · ' + points + ' free throws' });
+        startFree(p, points, false); return;
+      }
     }
-    event('shot', p.side, p, { points, detail: label + ' · ' + timing });
     alignToHoop(p);
     const start = releasePosition(p, range, style, approach);
-    const rating = range < 3.2 ? p.profile.ratings.finishing : p.profile.ratings.shooting;
-    const spread = clamp((style === 'dunk' ? 0.036 : 0.061) + (75 - rating) * 0.0011 + Math.max(0, range - 2) * 0.0046 +
+    const catchAndShoot = sim.lastPass?.to === p.id && state.tick - sim.lastPass.tick <= 45;
+    const offDribble = (sim.lastDribble?.[p.id] ?? -999) >= state.tick - 34 && p.profile.ratings.handling >= 80;
+    const styleSpreadAdd = style === 'dunk' ? 0.036 : (style === 'fadeaway' ? 0.079 : 0.061);
+    let spread = clamp(styleSpreadAdd + (75 - rating) * 0.0011 + Math.max(0, range - 2) * 0.0046 +
       Math.max(0, range - 9.55) * 0.051 + pressure * 0.18 - postAdvantage * 0.92 + Math.abs(error) * 0.22 + (100 - p.stamina) * 0.00072 +
-      Math.hypot(p.velocity.x, p.velocity.z) * 0.004, 0.024, 0.72);
-    const depthBias = error * (style === 'dunk' ? 0.11 : 0.24 + range * 0.026);
+      Math.hypot(p.velocity.x, p.velocity.z) * 0.004 + (andOneFoul ? 0.06 : 0), 0.024, 0.72);
+    if (catchAndShoot) spread *= 0.82;
+    if (offDribble) spread *= 0.90;
+    if (isGreen) spread *= 0.34;
+    const depthBias = error * (style === 'dunk' ? 0.11 : 0.24 + range * 0.026) * (isGreen ? 0.25 : 1);
     const end = aimAt(rim, start, aimRoll, spread, depthBias);
     const duration = style === 'dunk' ? 0.34 : style === 'layup' ? 0.52 :
-      clamp(0.78 + range * 0.063 + (style === 'floater' ? 0.16 : 0), 0.81, 2.24);
-    const velocity = velocityFor(start, end, duration);
-    const spin = backspin(velocity, style === 'dunk' ? 3 : style === 'layup' ? 7 : 11);
-    if (closest && controls[closest.id]?.contest && distance(closest.position, p.position) < 1.12 + reachAdvantage(closest) * 0.42 && random() < clamp(0.12 + closest.profile.ratings.interior * 0.002 + reachAdvantage(closest) * 0.45, 0.04, 0.58)) {
+      clamp(0.78 + range * 0.063 + (style === 'floater' ? 0.22 : 0), 0.81, 2.34);
+    let velocity = velocityFor(start, end, duration);
+    let bank = false;
+    if (style === 'layup' && Math.abs(p.position.z) >= 0.72 && p.position.x * sign(p.side) < COURT.rimX - 0.2) {
+      const boardFaceX = rim.x + sign(p.side) * (BOARD_OFFSET - BOARD_HALF_DEPTH - BALL_RADIUS);
+      const bankShot = bankVelocityFor(start, end, boardFaceX, 0.72);
+      if (bankShot) {
+        velocity = bankShot.velocity;
+        bank = true;
+      }
+    }
+    const detailTiming = isGreen ? 'Excellent · Green' : timing;
+    event('shot', p.side, p, { points, detail: detailOverride ?? (label + (bank ? ' (Bank)' : '') + ' · ' + detailTiming) });
+    state.shotFeedback = { playerId: p.id, tick: state.tick, timing, contest: contestLabel, style: label, grade: precision, green: isGreen, bank };
+    if (andOneFoul && closest) {
+      event('foul', closest.side, closest, { detail: 'Shooting foul · And-1 chance' });
+      sim.pendingAndOne = { shooter: p.id, points };
+    }
+    const spin = backspin(velocity, style === 'dunk' ? 3 : style === 'layup' ? (bank ? 2 : 7) : 11);
+    const blockMult = style === 'fadeaway' ? 0.55 : style === 'floater' ? 0.58 : style === 'hook' ? 0.62 : 1;
+    if (!andOneFoul && closest && isContesting(closest) && distance(closest.position, p.position) < 1.12 + reachAdvantage(closest) * 0.42 &&
+      random() < clamp(0.12 + closest.profile.ratings.interior * 0.002 + reachAdvantage(closest) * 0.45, 0.04, 0.58) * blockMult * (isStunned(closest) ? 0.45 : 1)) {
       event('block', closest.side, closest);
       launch(p, start, at(-Math.cos(p.facing) * (1.5 + Math.abs(velocity.x) * 0.35), Math.max(-1.2, velocity.y * 0.35),
         -Math.sin(p.facing) * 1.5 + (random() - 0.5) * 3.4), backspin(velocity, -5), { kind: 'shot', from: p.id, points, age: 0 });
@@ -382,30 +508,46 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       event('miss', p.side, p, { detail: 'Blocked' });
       return;
     }
-    launch(p, start, velocity, spin, { kind: 'shot', from: p.id, age: 0, points });
+    launch(p, start, velocity, spin, { kind: 'shot', from: p.id, age: 0, points, ...(andOneFoul ? { andOne: true, fouled: true } : {}) });
   }
   function pass(p: GamePlayer, cmd: Control) {
     const mates = state.players.filter(q => q.side === p.side && q.id !== p.id);
+    const foes = state.players.filter(q => q.side !== p.side);
     const aim = cmd.move;
-    function merit(q: GamePlayer) {
-      const dx = q.position.x - p.position.x, dz = q.position.z - p.position.z;
-      const d = Math.hypot(dx, dz);
-      return (dx * aim.x + dz * aim.z) / Math.max(0.1, d) * 12 - d * 0.14 + dx * sign(p.side) * 0.12;
-    }
-    const target = mates.find(q => q.id === cmd.targetId) ?? mates.sort((a, b) => merit(b) - merit(a))[0];
+    const attackDir = sign(p.side);
+    const directional = selectPassTarget(p, mates, aim, attackDir, foes);
+    const target = mates.find(q => q.id === cmd.targetId) ?? (directional ? mates.find(q => q.id === directional) : undefined) ??
+      [...mates].sort((a, b) => {
+        const merit = (q: GamePlayer) => {
+          const dx = q.position.x - p.position.x, dz = q.position.z - p.position.z;
+          const d = Math.hypot(dx, dz);
+          const openBonus = foes.length ? Math.min(2.2, Math.min(...foes.map(o => distance(q.position, o.position))) * 0.45) : 0;
+          return (dx * aim.x + dz * aim.z) / Math.max(0.1, d) * 12 - d * 0.12 + dx * attackDir * 0.14 + openBonus;
+        };
+        return merit(b) - merit(a);
+      })[0];
     if (!target) return;
     const lob = cmd.passType === 'lob', bounce = cmd.passType === 'bounce';
-    const duration = clamp(distance(p.position, target.position) / (lob ? 11 : 16) * (1.14 - p.profile.ratings.passing * 0.0016), lob ? 0.54 : 0.18, lob ? 1.4 : 1.05);
-    const end = at(clamp(target.position.x + target.velocity.x * duration * 0.65, -LIMIT_X, LIMIT_X), 1.28, clamp(target.position.z + target.velocity.z * duration * 0.65, -LIMIT_Z, LIMIT_Z));
+    const gap = distance(p.position, target.position);
+    const hoop = { x: attackDir * COURT.rimX, z: 0 };
+    const leadFactor = clamp(0.54 + (p.profile.ratings.passing - 60) * 0.004, 0.44, 0.78);
+    const rawDur = clamp(gap / (lob ? 9.6 : 16) * (1.14 - p.profile.ratings.passing * 0.0016), lob ? 0.56 : 0.18, lob ? 1.38 : 1.05);
+    const minX = half ? 0.55 : -LIMIT_X + 0.35;
+    const predictedX = clamp(target.position.x + target.velocity.x * rawDur * leadFactor, minX, LIMIT_X - 0.35);
+    const predictedZ = clamp(target.position.z + target.velocity.z * rawDur * leadFactor, -LIMIT_Z + 0.35, LIMIT_Z - 0.35);
+    const alleyOop = lob && distance({ x: predictedX, z: predictedZ }, hoop) < 3.1;
+    const duration = alleyOop ? clamp(gap / 8.5 * (1.14 - p.profile.ratings.passing * 0.0016), 0.56, 1.38) : rawDur;
+    const endY = alleyOop ? Math.min(COURT.rimHeight - 0.12, dunkReach(target, 3.2)) : lob ? 1.95 : 1.28;
+    const end = at(predictedX, endY, predictedZ);
     p.facing = Math.atan2(end.z - p.position.z, end.x - p.position.x);
     const start = localBall(p, 0.19, 0, body(p).height * 0.75);
-    const velocity = velocityFor(start, end, duration);
-    const flight: PassFlight = { kind: 'pass', from: p.id, target: target.id, age: 0, duration, bounce, lob };
+    let velocity = velocityFor(start, end, duration);
+    const flight: PassFlight = { kind: 'pass', from: p.id, target: target.id, age: 0, duration, bounce, lob, ...(alleyOop ? { alleyOop: true } : {}) };
     if (bounce) {
-      const floorTime = duration * 0.56;
-      velocity.y = (BALL_RADIUS - start.y) / floorTime + GRAVITY * floorTime / 2;
-      flight.floorTime = floorTime;
-    } else if (lob) velocity.y += 0.9;
+      const bounced = bouncePassVelocity(start, end, duration);
+      velocity = bounced.velocity;
+      flight.floorTime = bounced.floorTime;
+    }
     const horizontal = Math.hypot(velocity.x, velocity.z);
     launch(p, start, velocity, backspin(velocity, bounce ? -horizontal / BALL_RADIUS * 0.73 : 4), flight);
     event('pass', p.side, p, { detail: cmd.passType ?? 'chest' });
@@ -416,6 +558,8 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
   function resolveShot(shooter: GamePlayer, flight: ShotFlight, made: boolean) {
     sim.flight = null;
     const ft = sim.free;
+    const andOne = flight.andOne ? sim.pendingAndOne : undefined;
+    if (andOne) delete sim.pendingAndOne;
     if (made) {
       state.score[shooter.side] += flight.points;
       event('score', shooter.side, shooter, { points: flight.points, ...(ft && { detail: 'Free throw' }) });
@@ -425,15 +569,38 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       if (spin) { spin.x *= 0.65; spin.y *= 0.65; spin.z *= 0.65; }
     } else {
       event('miss', shooter.side, shooter, ft ? { detail: 'Free throw' } : undefined);
-      state.ball.kind = 'loose';
-      sim.pendingRebound = true;
-      if (sim.rimTouched) state.shotClock = 14;
+      if (!andOne) {
+        state.ball.kind = 'loose';
+        sim.pendingRebound = true;
+        if (sim.rimTouched) state.shotClock = 14;
+      }
+    }
+    if (andOne) {
+      if (made) {
+        const assist = sim.lastPass;
+        if (assist?.to === shooter.id && state.tick - assist.tick < 300) {
+          const helper = state.players.find(p => p.id === assist.from);
+          if (helper) event('assist', helper.side, helper);
+        }
+        if (settings.mode === 'blacktop' && state.score[shooter.side] >= (settings.targetScore ?? 21)) {
+          state.phase = 'final';
+          return;
+        }
+        startFree(shooter, 1, true);
+      } else {
+        startFree(shooter, flight.points, false);
+      }
+      return;
     }
     if (ft) {
       ft.remaining--;
-      if (ft.remaining > 0) { ft.waiting = true; dead(shooter.side, made); }
-      else {
+      if (ft.remaining > 0) {
+        ft.waiting = true;
+        state.freeThrow = { shooterId: ft.shooter, remaining: ft.remaining, total: ft.total ?? ft.remaining, ...(ft.andOne ? { andOne: true } : {}) };
+        dead(shooter.side, made);
+      } else {
         delete sim.free;
+        state.freeThrow = null;
         if (made) dead(opposite(shooter.side), true);
       }
       return;
@@ -485,17 +652,36 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       f.age += DT;
       const receiver = state.players.find(q => q.id === f.target);
       for (const q of state.players) {
-        if (q.side === passer.side || f.age < 0.09 || ball.position.y > body(q).reach || distance(q.position, ball.position) > (controls[q.id]?.steal ? 1.03 : 0.39)) continue;
-        event('steal', q.side, q, { detail: 'Intercepted pass' }); event('turnover', passer.side, passer); hold(q); return;
+        if (q.side === passer.side || f.age < 0.09) continue;
+        const maxReachY = body(q).reach + (controls[q.id]?.contest ? 0.25 : 0);
+        const reachDist = controls[q.id]?.steal ? 1.08 : controls[q.id]?.contest ? 0.85 : 0.42;
+        const d = distance(q.position, ball.position);
+        if (ball.position.y > maxReachY || d > reachDist) continue;
+        const cleanStealDist = controls[q.id]?.steal ? 0.78 : 0.39;
+        if (d <= cleanStealDist || q.profile.ratings.perimeter >= 84) {
+          sim.stealPose ??= {}; sim.stealPose[q.id] = state.tick + 18;
+          event('steal', q.side, q, { detail: 'Intercepted pass' }); event('turnover', passer.side, passer); hold(q); return;
+        }
+        if ((controls[q.id]?.steal || controls[q.id]?.contest) && canAct(q.id + '/deflect', 24)) {
+          sim.stealPose ??= {}; sim.stealPose[q.id] = state.tick + 16;
+          ball.velocity.x *= -0.35;
+          ball.velocity.y = Math.max(1.8, Math.abs(ball.velocity.y) + 1.4);
+          ball.velocity.z += (random() - 0.5) * 3.8;
+          ball.kind = 'loose';
+          sim.flight = null;
+          return;
+        }
       }
-      const catchAfter = f.bounce ? (f.floorTime ?? f.duration * 0.56) + DT / 2 : f.duration * (f.lob ? 0.62 : 0.35);
-      if (receiver && f.age > catchAfter && distance(receiver.position, ball.position) < 1.25 && ball.position.y < body(receiver).reach + 0.25) {
+      const catchAfter = f.bounce ? (f.floorTime ?? f.duration * 0.58) + DT / 2 : f.duration * (f.lob ? 0.58 : 0.35);
+      const catchDist = f.alleyOop ? 1.55 : 1.25;
+      const catchHeight = f.alleyOop && receiver ? dunkReach(receiver, 3.5) + 0.35 : (receiver ? body(receiver).reach + 0.25 : 2.5);
+      if (receiver && f.age > catchAfter && distance(receiver.position, ball.position) < catchDist && ball.position.y < catchHeight) {
         hold(receiver); sim.lastPass = { from: passer.id, to: receiver.id, tick: state.tick };
         const hoop = { x: sign(receiver.side) * COURT.rimX, z: 0 };
-        if (f.lob && distance(receiver.position, hoop) < 2.15 && (controls[receiver.id]?.shoot || controls[receiver.id]?.sprint)) {
-          shoot(receiver, IDEAL_RELEASE, controls);
-          const attempt = state.events.findLast(e => e.type === 'shot' && e.tick === state.tick);
-          if (attempt) attempt.detail = 'Alley-oop';
+        const alleyRadius = f.alleyOop ? 2.65 : 2.15;
+        const triggerOop = controls[receiver.id]?.shoot || controls[receiver.id]?.sprint || (f.alleyOop && Math.hypot(receiver.velocity.x, receiver.velocity.z) > 2.2);
+        if (f.lob && distance(receiver.position, hoop) < alleyRadius && triggerOop) {
+          shoot(receiver, IDEAL_RELEASE, controls, 'Alley-oop');
         }
         return;
       }
@@ -530,6 +716,14 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     if (sim.free) { freeStep(controls); return state; }
     for (const p of state.players) {
       const action = controls[p.id];
+      if (action?.offensePlay) {
+        state.offensePlay ??= ['motion', 'motion'];
+        state.offensePlay[p.side] = action.offensePlay;
+      }
+      if (action?.defenseScheme) {
+        state.defenseScheme ??= ['man', 'man'];
+        state.defenseScheme[p.side] = action.defenseScheme;
+      }
       if (action?.substituteId && canAct(p.id + '/sub', 90)) {
         const bench = state.teams[p.side].roster.find(profile => profile.id === action.substituteId);
         if (bench && !state.players.some(q => q.side === p.side && q.profile.id === bench.id)) {
@@ -574,27 +768,72 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       }
       for (const q of state.players) {
         if (q.side === owner.side || !controls[q.id]?.steal || distance(owner.position, q.position) > 1.45 || !canAct(q.id + '/steal', 46)) continue;
+        sim.stealPose ??= {}; sim.stealPose[q.id] = state.tick + 18;
         const roll = random();
         const skill = (q.profile.ratings.perimeter - owner.profile.ratings.handling) * 0.004;
         const reach = clamp((1.25 - distance(q.position, state.ball.position)) * 0.15, -0.09, 0.08);
         if (roll < 0.26 + skill + reach - (sim.dribble?.crossover ? 0.12 : 0)) {
           event('steal', q.side, q); event('turnover', owner.side, owner); hold(q); state.charge[owner.id] = 0; break;
         }
-        if (roll > 0.94) { event('foul', q.side, q, { detail: 'Reach-in' }); dead(owner.side); break; }
+        if (roll > 0.94) {
+          sim.teamFouls ??= [0, 0];
+          sim.teamFouls[q.side]++;
+          state.teamFouls = [...sim.teamFouls];
+          if (settings.mode === 'regulation' && sim.teamFouls[q.side] >= 5) {
+            event('foul', q.side, q, { detail: 'Reach-in · Bonus (2 FT)' });
+            startFree(owner, 2, false);
+          } else {
+            event('foul', q.side, q, { detail: 'Reach-in' });
+            dead(owner.side);
+          }
+          break;
+        }
       }
       if (state.ball.ownerId === owner.id) {
-        if (!cmd?.shoot && state.charge[owner.id] > 0) shoot(owner, state.charge[owner.id], controls);
-        else if (!cmd?.shoot && cmd?.pass && canAct(owner.id + '/pass', 15)) pass(owner, cmd);
+        if (cmd?.pumpFake && !(state.charge[owner.id] > 0.28) && canAct(owner.id + '/fake', 32)) {
+          state.charge[owner.id] = 0;
+          delete sim.gather;
+          alignToHoop(owner);
+          sim.pumpFake ??= {};
+          sim.pumpFake[owner.id] = state.tick + 20;
+          owner.stamina = Math.max(0, owner.stamina - 0.8);
+          owner.pose = 'pumpFake';
+          for (const def of state.players) {
+            if (def.side === owner.side) continue;
+            const d = distance(def.position, owner.position);
+            const biting = controls[def.id]?.contest || (sim.jumpContest?.[def.id] ?? 0) > state.tick;
+            if (d < 2.1 && (biting || (d < 1.55 && random() < clamp(0.45 - (def.profile.ratings.iq - 70) * 0.008, 0.15, 0.65)))) {
+              sim.jumpContest ??= {};
+              sim.jumpContest[def.id] = state.tick + 26;
+              sim.stun ??= {};
+              sim.stun[def.id] = state.tick + 28;
+            }
+          }
+        } else if (state.charge[owner.id] > 0 && state.charge[owner.id] < 0.25 && cmd?.pass && canAct(owner.id + '/pass', 15)) {
+          state.charge[owner.id] = 0;
+          delete sim.gather;
+          pass(owner, cmd);
+        } else if (!cmd?.shoot && state.charge[owner.id] > 0) {
+          shoot(owner, state.charge[owner.id], controls);
+        } else if (!cmd?.shoot && cmd?.pass && canAct(owner.id + '/pass', 15)) {
+          pass(owner, cmd);
+        }
       }
     } else progressBall(controls);
     if (state.phase === 'final' as GameState['phase']) return state;
-    if (settings.mode === 'regulation') state.clock = Math.max(0, Math.round((state.clock - DT) * TICK_RATE) / TICK_RATE);
-    if (settings.mode !== 'practice' && state.ball.kind !== 'shot' && state.phase === 'live') state.shotClock = Math.max(0, Math.round((state.shotClock - DT) * TICK_RATE) / TICK_RATE);
-    if (settings.mode === 'regulation' && state.clock <= 0 && state.ball.kind !== 'shot') {
+    if (settings.mode === 'regulation' && !sim.pendingAndOne) state.clock = Math.max(0, Math.round((state.clock - DT) * TICK_RATE) / TICK_RATE);
+    if (settings.mode !== 'practice' && state.ball.kind !== 'shot' && state.phase === 'live' && !sim.pendingAndOne) state.shotClock = Math.max(0, Math.round((state.shotClock - DT) * TICK_RATE) / TICK_RATE);
+    if (settings.mode === 'regulation' && state.clock <= 0 && state.ball.kind !== 'shot' && !sim.pendingAndOne) {
       event('period', state.possession, undefined, { detail: 'End of period ' + state.period });
       if (state.period >= settings.periods && state.score[0] !== state.score[1]) state.phase = 'final';
-      else { state.period++; state.clock = state.period > settings.periods ? Math.min(300, settings.periodSeconds) : settings.periodSeconds; dead((state.period % 2 === 0 ? 1 : 0)); }
-    } else if (state.shotClock <= 0 && state.phase === 'live' && state.ball.kind !== 'shot' && settings.mode !== 'practice') {
+      else {
+        state.period++;
+        state.clock = state.period > settings.periods ? Math.min(300, settings.periodSeconds) : settings.periodSeconds;
+        sim.teamFouls = [0, 0];
+        state.teamFouls = [0, 0];
+        dead((state.period % 2 === 0 ? 1 : 0));
+      }
+    } else if (state.shotClock <= 0 && state.phase === 'live' && state.ball.kind !== 'shot' && settings.mode !== 'practice' && !sim.pendingAndOne) {
       event('turnover', state.possession, owner, { detail: 'Shot clock violation' }); dead(opposite(state.possession));
     }
     return state;

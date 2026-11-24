@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, PointerEvent } from 'react';
 import { zeroControl } from '../contracts/index.ts';
 import {
-  DEFAULT_KEYBOARD_BINDINGS, createInputState, limitMove,
+  DEFAULT_KEYBOARD_BINDINGS, createInputState, limitMove, mergeBindings,
 } from './input.ts';
 import type { KeyboardBindings, PlayerControl, TouchAction, TouchInput } from './input.ts';
 import './controls.css';
 
-export { DEFAULT_KEYBOARD_BINDINGS, GAMEPAD_HINTS, KEYBOARD_HINTS, selectDirectionalPassTarget } from './input.ts';
+export {
+  DEFAULT_KEYBOARD_BINDINGS, GAMEPAD_HINTS, KEYBOARD_HINTS,
+  deriveShotType, formatKeyboardHints, mergeBindings, selectDirectionalPassTarget, selectSwitchTarget,
+} from './input.ts';
 export type { KeyboardBindings, PlayerControl, TouchAction, TouchInput } from './input.ts';
 
-type Options = { enabled?: boolean; bindings?: KeyboardBindings };
+type Options = { enabled?: boolean; bindings?: Partial<KeyboardBindings> };
 
 function shouldCaptureKey(event: KeyboardEvent) {
   const target = event.target;
@@ -25,17 +28,18 @@ function getGamepad() {
 }
 
 export function useControls({ enabled = true, bindings = DEFAULT_KEYBOARD_BINDINGS }: Options = {}) {
-  const [input] = useState(() => createInputState(bindings));
+  const merged = useMemo(() => mergeBindings(bindings), [bindings]);
+  const [input] = useState(() => createInputState(merged));
 
   useEffect(() => {
     input.clear();
     if (!enabled) return;
 
-    const mappedCodes = new Set(Object.values(bindings).flat());
+    const mappedCodes = new Set([...Object.values(merged).flat(), 'Digit1', 'Digit2', 'Digit3', 'Digit4']);
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || !mappedCodes.has(event.code) || !shouldCaptureKey(event)) return;
       event.preventDefault();
-      if (!event.repeat) input.keyDown(event.code, bindings);
+      if (!event.repeat) input.keyDown(event.code, merged);
     };
     const keyup = (event: KeyboardEvent) => input.keyUp(event.code);
     const clear = () => input.clear();
@@ -51,19 +55,20 @@ export function useControls({ enabled = true, bindings = DEFAULT_KEYBOARD_BINDIN
       document.removeEventListener('visibilitychange', clear);
       input.clear();
     };
-  }, [bindings, enabled, input]);
+  }, [merged, enabled, input]);
 
   const sampleGamepad = useCallback(() => {
     if (enabled && !document.hidden) input.sampleGamepad(getGamepad());
   }, [enabled, input]);
   const read = useCallback((): PlayerControl => {
     if (!enabled || document.hidden) return zeroControl();
-    return input.read(bindings, getGamepad());
-  }, [bindings, enabled, input]);
+    return input.read(merged, getGamepad());
+  }, [merged, enabled, input]);
   return { read, sampleGamepad, touch: input.touch };
 }
 
 const TOUCH_BUTTONS = [
+  { action: 'pumpFake', label: 'Fake', accessibleLabel: 'Pump fake' },
   { action: 'dribble', label: 'Dribble', accessibleLabel: 'Dribble move' },
   { action: 'bouncePass', label: 'Bounce', accessibleLabel: 'Bounce pass' },
   { action: 'lobPass', label: 'Lob', accessibleLabel: 'Lob pass' },
@@ -82,16 +87,17 @@ const VIRTUAL_POINTER = -1;
 const STILL = { x: 0, z: 0 };
 
 type Button = (typeof TOUCH_BUTTONS)[number] | typeof SPRINT_BUTTON;
-export type TouchContext = 'offense' | 'defense' | 'loose' | 'freeThrow';
+export type TouchContext = 'offense' | 'offball' | 'defense' | 'loose' | 'freeThrow';
 const CONTEXT_ACTIONS: Record<TouchContext, readonly TouchAction[]> = {
-  offense: ['shoot', 'pass', 'bouncePass', 'lobPass', 'screen', 'dribble', 'sprint'],
+  offense: ['shoot', 'pass', 'bouncePass', 'lobPass', 'pumpFake', 'dribble', 'screen', 'sprint'],
+  offball: ['pass', 'screen', 'switchPlayer', 'sprint'],
   defense: ['contest', 'steal', 'switchPlayer', 'sprint'],
   loose: ['contest', 'steal', 'switchPlayer', 'shoot', 'sprint'],
   freeThrow: ['shoot'],
 };
-type TouchControlsProps = { touch: TouchInput; visible?: boolean; context?: TouchContext };
+type TouchControlsProps = { touch: TouchInput; visible?: boolean; context?: TouchContext; charge?: number };
 
-export function TouchControls({ touch, visible, context }: TouchControlsProps) {
+export function TouchControls({ touch, visible, context, charge = 0 }: TouchControlsProps) {
   const [stick, setStick] = useState(STILL);
   const [sprinting, setSprinting] = useState(false);
   const [pressedActions, setPressedActions] = useState<TouchAction[]>([]);
@@ -154,6 +160,11 @@ export function TouchControls({ touch, visible, context }: TouchControlsProps) {
   };
   const renderButton = ({ action, label, accessibleLabel }: Button) => {
     const pressed = pressedActions.includes(action) || (action === 'sprint' && sprinting);
+    const displayLabel = context === 'offense' && action === 'screen' ? 'Pick'
+      : context === 'offball' && action === 'pass' ? 'Call Pass' : label;
+    const isShoot = action === 'shoot';
+    const chargePct = isShoot && charge > 0 ? Math.min(100, Math.round((charge / 1.2) * 100)) : 0;
+    const inGreen = isShoot && Math.abs(charge - 0.62) < 0.065;
     return (
       <button
         type="button"
@@ -162,6 +173,8 @@ export function TouchControls({ touch, visible, context }: TouchControlsProps) {
         aria-label={accessibleLabel}
         hidden={!!context && !CONTEXT_ACTIONS[context].includes(action) && !pressed}
         data-pressed={pressed}
+        data-green={inGreen || undefined}
+        style={chargePct ? ({ '--charge': `${chargePct}%` } as CSSProperties) : undefined}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
@@ -179,7 +192,7 @@ export function TouchControls({ touch, visible, context }: TouchControlsProps) {
           touch.release(VIRTUAL_POINTER);
         }}
       >
-        {label}
+        {displayLabel}
       </button>
     );
   };

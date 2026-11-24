@@ -7,7 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { createEngine } from '../../packages/game-engine/index.ts';
 import { createCoach } from '../../packages/basketball-ai/index.ts';
 import { TICK_RATE } from '../../packages/contracts/index.ts';
-import type { ClientMessage, Engine, GameState, ServerMessage, Side } from '../../packages/contracts/index.ts';
+import type { ClientMessage, Control, Engine, GameState, ServerMessage, Side } from '../../packages/contracts/index.ts';
 import { roomConfig, control } from './validate.ts';
 
 type Input = Extract<ClientMessage, {type:'input'}>;
@@ -151,13 +151,17 @@ export function createRoomServer(options: { dir?: string; origins?: string[]; ma
       for (const r of rooms.values()) {
         if (!ready(r) || r.engine.state.phase === 'final') continue;
         const users = new Set<string>();
+        const humanControls: Record<string, Control> = {};
         for (const s of r.seats) if (s) {
           const next = s.pending.shift();
           if (next) { s.held = next; s.ack = next.seq; }
           if (Date.now() - s.lastInput > 500) s.held = undefined;
-          if (s.held) users.add(s.held.playerId);
+          if (s.held) {
+            users.add(s.held.playerId);
+            humanControls[s.held.playerId] = s.held.control;
+          }
         }
-        const controls = r.coach.controls(r.engine.state, users);
+        const controls = r.coach.controls(r.engine.state, users, humanControls);
         for (const side of sides) {
           const held = r.seats[side]?.held;
           if (held) controls[held.playerId] = held.control;

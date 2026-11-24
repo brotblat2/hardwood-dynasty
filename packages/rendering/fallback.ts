@@ -1,13 +1,13 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { COURT, TICK_RATE } from '../contracts/index.ts';
-import type { GameEvent, GamePlayer, GameState, Vec3 } from '../contracts/index.ts';
+import type { GameEvent, GamePlayer, GameState, Team, Vec3 } from '../contracts/index.ts';
 import { makeCourtTexture, seededRandom } from './court.ts';
 import { courtMovement } from './input-view.ts';
 import { appearanceFor } from './appearance.ts';
 import { makeGameCamera } from './camera.ts';
 import { makeMotion, motionEvents } from './motion.ts';
 import { netResponse } from './equipment.ts';
-import type { Camera, GameRenderer, RendererOptions } from './index.ts';
+import type { Camera, GameRenderer, RenderHints, RendererOptions } from './index.ts';
 
 type Point = { x: number; y: number; depth: number };
 type SourcePoint = { x: number; y: number };
@@ -26,13 +26,15 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
   const ctx = canvas.getContext('2d');
   const backdrop = document.createElement('canvas');
   const background = backdrop.getContext('2d');
-  const floorTextures = new Map<boolean, ReturnType<typeof makeCourtTexture>>();
+  const floorTextures = new Map<string, ReturnType<typeof makeCourtTexture>>();
   const camera = new PerspectiveCamera(39, 1, 0.12, 120);
   const vector = new Vector3();
   const placeCamera = makeGameCamera(camera);
   const actors = new Map<string, { appearance: ReturnType<typeof appearanceFor>; motion: ReturnType<typeof makeMotion> }>();
+  const trailPoints: Vec3[] = [];
   let lastFrame = 0;
   let lastBallTick = -1;
+  let lastTrailTick = -1;
   let ballRoll = 0;
   let view: Camera = options.camera ?? 'broadcast';
   let quality = options.quality ?? 'high';
@@ -191,7 +193,7 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     paintTriangle(target, image, b, d, c, topRight, bottomRight, bottomLeft);
   }
 
-  function paintArena(blacktop: boolean) {
+  function paintArena(blacktop: boolean, homeTeam?: Team) {
     if (!background) return;
     const target = background;
     const random = seededRandom(1701);
@@ -242,13 +244,15 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       target.fillStyle = '#b8c7aa';
       target.font = `bold ${Math.max(8, canvas.height * 0.013)}px sans-serif`;
       target.textAlign = 'center';
+      const bannerText = homeTeam ? `${homeTeam.city} ${homeTeam.name}`.toUpperCase() : 'HARDWOOD DYNASTY';
       for (const x of [-10.5, -3.5, 3.5, 10.5]) {
         const label = project(x, 0.46, -9.02);
-        if (label.depth >= -1 && label.depth <= 1) target.fillText('HARDWOOD DYNASTY', label.x, label.y);
+        if (label.depth >= -1 && label.depth <= 1) target.fillText(bannerText, label.x, label.y);
       }
     }
-    if (!floorTextures.has(blacktop)) floorTextures.set(blacktop, makeCourtTexture(blacktop, 1));
-    const image = floorTextures.get(blacktop)!.image as HTMLCanvasElement;
+    const floorKey = blacktop ? 'blacktop' : `team:${homeTeam?.id ?? 'default'}`;
+    if (!floorTextures.has(floorKey)) floorTextures.set(floorKey, makeCourtTexture(blacktop, 1, homeTeam));
+    const image = floorTextures.get(floorKey)!.image as HTMLCanvasElement;
     const columns = quality === 'high' ? 11 : 8;
     const rows = quality === 'high' ? 8 : 6;
     for (let v = 0; v < rows; v++) {
@@ -288,6 +292,21 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     const rectangle = [project(board, h + 0.035, -0.279), project(board, h + 0.48, -0.279), project(board, h + 0.48, 0.279), project(board, h + 0.035, 0.279)];
     line(target, '#e7dfc5', ratio * 0.85, ...rectangle, rectangle[0]);
     line(target, '#bd4f2e', weight * 0.75, project(board, h, 0), project(rimX + side * 0.22, h, 0));
+    const clockBox = project(board + side * 0.08, h + 1.20, 0);
+    if (clockBox.depth >= -1 && clockBox.depth <= 1) {
+      const bw = Math.max(18 * ratio, weight * 7);
+      const bh = bw * 0.7;
+      target.fillStyle = '#0e1112';
+      target.fillRect(clockBox.x - bw / 2, clockBox.y - bh / 2, bw, bh);
+      target.strokeStyle = state.shotClock <= 0 ? '#ff4a44' : '#3a4240';
+      target.lineWidth = Math.max(1, ratio);
+      target.strokeRect(clockBox.x - bw / 2, clockBox.y - bh / 2, bw, bh);
+      target.fillStyle = state.shotClock <= 5 ? '#ff554c' : '#ffba52';
+      target.font = `900 ${Math.max(8, bh * 0.72)}px monospace`;
+      target.textAlign = 'center';
+      target.textBaseline = 'middle';
+      target.fillText(String(Math.max(0, Math.ceil(state.shotClock))).padStart(2, '0'), clockBox.x, clockBox.y + 1);
+    }
     const impact = netResponse(state, side);
     const rim: Point[] = [];
     const rows = 5;
@@ -357,7 +376,7 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     target.fill();
   }
 
-  function paintActor(target: CanvasRenderingContext2D, player: GamePlayer, state: GameState, selected: boolean, ratio: number, event: GameEvent | undefined) {
+  function paintActor(target: CanvasRenderingContext2D, player: GamePlayer, state: GameState, selected: boolean, ratio: number, event: GameEvent | undefined, isPassTarget = false) {
     let actor = actors.get(player.id);
     if (!actor) {
       const appearance = appearanceFor(player.profile);
@@ -405,16 +424,24 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     target.fillStyle = shadow;
     target.fillRect(-1, -1, 2, 2);
     target.restore();
-    if (selected) {
+    if (selected || isPassTarget) {
       const marker: Point[] = [];
       const steps = 36;
       for (let i = 0; i <= steps; i++) {
         const arc = i / steps * Math.PI * 2;
         marker.push(project(x + 0.42 * Math.cos(arc), 0.026, z + 0.42 * Math.sin(arc)));
       }
-      line(target, '#1725148a', ratio * 3.15, ...marker);
-      line(target, '#ddffa2', ratio * 1.8, ...marker);
-      if (charge > 0) line(target, Math.abs(charge - 0.62) < 0.085 ? '#f1ffe2' : '#ffc763', ratio * 2.7, ...marker.slice(0, 2 + Math.floor(Math.min(1, charge / 1.2) * (steps - 1))));
+      if (selected) {
+        line(target, '#1725148a', ratio * 3.15, ...marker);
+        line(target, '#ddffa2', ratio * 1.8, ...marker);
+        if (charge > 0) {
+          const meterColor = Math.abs(charge - 0.62) < 0.065 ? '#baff93' : charge > 0.72 ? '#ff7d7c' : '#ffc763';
+          line(target, meterColor, ratio * 2.7, ...marker.slice(0, 2 + Math.floor(Math.min(1, charge / 1.2) * (steps - 1))));
+        }
+      } else {
+        line(target, '#0f273088', ratio * 2.8, ...marker);
+        line(target, '#62e5ff', ratio * 1.8, ...marker);
+      }
     }
 
     const order = acrossCamera < 0 ? [1, 0] : [0, 1];
@@ -525,7 +552,7 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     picks.push({ id: player.id, x: (ground.x + head.x) / 2, y: (ground.y + head.y) / 2, radius: Math.max(11 * ratio, size * 0.55) });
   }
 
-  function draw(state: GameState, selectedId?: string) {
+  function draw(state: GameState, selectedId?: string, hints?: RenderHints) {
     if (!ctx || !background) return;
     const ratio = Math.min(window.devicePixelRatio || 1, quality === 'high' ? 1.5 : 1);
     const w = Math.round(container.clientWidth * ratio);
@@ -540,9 +567,11 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     placeCamera(state, view, selectedId, Math.min(0.08, time - lastFrame));
     lastFrame = time;
     const blacktop = state.config.mode === 'blacktop';
-    const nextKey = [w, h, blacktop, view, quality, ...camera.matrixWorld.elements.map((number) => number.toFixed(3))].join(',');
+    const homeTeam = blacktop ? undefined : state.teams[0];
+    const floorKey = blacktop ? 'blacktop' : `team:${homeTeam?.id ?? 'default'}`;
+    const nextKey = [w, h, floorKey, view, quality, ...camera.matrixWorld.elements.map((number) => number.toFixed(3))].join(',');
     if (nextKey !== stateKey) {
-      paintArena(blacktop);
+      paintArena(blacktop, homeTeam);
       stateKey = nextKey;
     }
     ctx.drawImage(backdrop, 0, 0);
@@ -551,6 +580,23 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     const ballGround = project(ball.x, 0.02, ball.z);
     const ballScale = Math.max(2.1 * ratio, Math.abs(ballGround.y - project(ball.x, 0.155, ball.z).y));
     disc(ctx, ballGround, ballScale * (1 + ball.y * 0.14), ballScale * 0.46, `rgba(33,25,9,${0.39 / (1 + ball.y * 0.38)})`);
+    if (state.ball.kind === 'shot' || state.ball.kind === 'pass') {
+      if (state.tick < lastTrailTick) trailPoints.length = 0;
+      if (state.tick !== lastTrailTick) {
+        trailPoints.push({ x: ball.x, y: Math.max(0.12, ball.y), z: ball.z });
+        if (trailPoints.length > 6) trailPoints.shift();
+        lastTrailTick = state.tick;
+      }
+      for (let i = 0; i < trailPoints.length - 1; i++) {
+        const pt = trailPoints[i];
+        const center = project(pt.x, pt.y, pt.z);
+        const raised = project(pt.x, pt.y + 0.12, pt.z);
+        const r = Math.max(1.2 * ratio, Math.hypot(center.x - raised.x, center.y - raised.y)) * (0.45 + (i / 6) * 0.45);
+        disc(ctx, center, r, r, `rgba(255,166,82,${((i + 1) / 7 * 0.28).toFixed(3)})`);
+      }
+    } else {
+      trailPoints.length = 0;
+    }
     const elapsed = Math.max(0, Math.min(8, state.tick - lastBallTick)) / TICK_RATE;
     if (state.tick < lastBallTick) ballRoll = 0;
     const { spin } = state.ball as typeof state.ball & { spin?: Vec3 };
@@ -563,7 +609,8 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     }
     const ordered = state.players.map((player) => {
       const { x, z } = player.position;
-      return { order: project(x, 0, z).depth, paint: () => paintActor(ctx, player, state, selectedId === player.id, ratio, recent.get(player.id)) };
+      const isPassTarget = hints?.passTargetId === player.id && selectedId !== player.id;
+      return { order: project(x, 0, z).depth, paint: () => paintActor(ctx, player, state, selectedId === player.id, ratio, recent.get(player.id), isPassTarget) };
     });
     for (const side of [-1, 1]) {
       ordered.push({ order: project(side * COURT.rimX, 0, 0).depth, paint: () => paintHoop(ctx, side, ratio, state) });
@@ -606,6 +653,14 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     draw,
     setCamera(next) { view = next; },
     projectMove(move) { return courtMovement(camera, move); },
+    projectPoint(x, y, z) {
+      vector.set(x, y, z).project(camera);
+      return {
+        x: (vector.x + 1) * container.clientWidth / 2,
+        y: (1 - vector.y) * container.clientHeight / 2,
+        visible: vector.z >= -1 && vector.z <= 1,
+      };
+    },
     setQuality(next) { quality = next; },
     pickPlayer(x, y) {
       const rect = canvas.getBoundingClientRect();

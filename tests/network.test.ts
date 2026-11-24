@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import { createRoomServer } from '../apps/multiplayer-server/server.ts';
+import { control as validateControl } from '../apps/multiplayer-server/validate.ts';
 import { fixtureTeam } from '../packages/contracts/fixtures.ts';
 import type { ClientMessage, ServerMessage } from '../packages/contracts/index.ts';
 import { createRoomClient } from '../packages/multiplayer/index.ts';
@@ -114,4 +115,20 @@ test('browser client restores its seat from session storage after reload', async
   assert.equal(second.token,first.token);
   second.client.close(true);
   assert.equal(second.client.resume(),false);
+});
+
+test('control validator accepts new gameplay fields and rejects invalid enums', () => {
+  assert.equal(validateControl({
+    move: { x: 0.5, z: -0.5 },
+    shotType: 'fadeaway',
+    pumpFake: true,
+    callScreen: true,
+    callPass: false,
+    offensePlay: 'fiveOut',
+    defenseScheme: 'zone23',
+  }), true);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, shotType: 'skyhook' }), false);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, offensePlay: 'triangle' }), false);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, defenseScheme: 'box1' }), false);
+  assert.equal(validateControl({ move: { x: 0, z: 0 }, pumpFake: 1 }), false);
 });

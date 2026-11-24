@@ -179,3 +179,139 @@ test('imported players with invalid or missing physical measurements stay finite
   for (const value of Object.values(g.state.ball.position)) assert.ok(Number.isFinite(value));
   assert.ok(Number.isFinite(g.state.players[0].velocity.x));
 });
+
+test('dribble move produces lateral separation and step-back burst', () => {
+  const lat = engine();
+  lat.state.players[0].position = { x: 6, z: 0 };
+  lat.step({ 'home-0': { move: { x: 0, z: 1 }, dribble: true } });
+  assert.ok(lat.state.players[0].velocity.z > 2.2);
+  assert.ok(lat.state.players[0].stamina < 98.5);
+  for (let i = 0; i < 6; i++) lat.step({ 'home-0': { move: { x: 0, z: 1 } } });
+  assert.ok(lat.state.players[0].position.z > 0.45);
+
+  const stepBack = engine();
+  stepBack.state.players[0].position = { x: 6, z: 0 };
+  stepBack.step({ 'home-0': { move: { x: -1, z: 0 }, dribble: true } });
+  assert.ok(stepBack.state.players[0].velocity.x < -2.4);
+});
+
+test('pump fake lifts contesting defender without shooting and early pass cancels charge', () => {
+  const g = engine();
+  const [shooter, defender] = [g.state.players[0], g.state.players[5]];
+  shooter.position = { x: 8, z: 0 };
+  defender.position = { x: 9.2, z: 0 };
+  for (let i = 0; i < 5; i++) g.step({ [shooter.id]: { ...cmd, shoot: true }, [defender.id]: { ...cmd, contest: true } });
+  g.step({ [shooter.id]: { ...cmd, pumpFake: true }, [defender.id]: { ...cmd, contest: true } });
+  assert.equal(g.state.ball.ownerId, shooter.id);
+  assert.equal(shooter.pose, 'pumpFake');
+  assert.equal(g.state.events.filter(e => e.type === 'shot').length, 0);
+  g.step({ [shooter.id]: cmd, [defender.id]: cmd });
+  assert.equal(defender.pose, 'contest');
+
+  const cancel = engine();
+  const [passer, receiver] = [cancel.state.players[0], cancel.state.players[1]];
+  passer.position = { x: 4, z: 2 };
+  receiver.position = { x: 6, z: -2 };
+  for (let i = 0; i < 5; i++) cancel.step({ [passer.id]: { ...cmd, shoot: true } });
+  cancel.step({ [passer.id]: { ...cmd, pass: true, targetId: receiver.id } });
+  assert.equal(cancel.state.ball.kind, 'pass');
+  assert.equal(cancel.state.events.filter(e => e.type === 'shot').length, 0);
+});
+
+test('angled layup banks cleanly off the backboard and scores', () => {
+  const g = engine({ seed: 17 });
+  const p = g.state.players[0];
+  p.position = { x: 11.4, z: 2.0 };
+  for (let i = 0; i < 37; i++) g.step({ [p.id]: { ...cmd, shoot: true } });
+  g.step();
+  assert.equal(g.state.shotFeedback?.bank, true);
+  for (let i = 0; i < 90; i++) g.step();
+  assert.deepEqual(g.state.score, [2, 0]);
+});
+
+test('lob alley-oop converts near the rim and bounce pass arrives cleanly', () => {
+  const g = engine();
+  const [passer, cutter] = [g.state.players[0], g.state.players[1]];
+  passer.position = { x: 5, z: 3 };
+  cutter.position = { x: 11.1, z: 0.4 };
+  g.step({ [passer.id]: { ...cmd, pass: true, targetId: cutter.id, passType: 'lob' } });
+  assert.equal(g.state.ball.kind, 'pass');
+  for (let i = 0; i < 90; i++) g.step({ [cutter.id]: { ...cmd, shoot: true } });
+  assert.ok(g.state.events.some(e => e.type === 'shot' && e.detail === 'Alley-oop'));
+  for (let i = 0; i < 60; i++) g.step();
+  assert.deepEqual(g.state.score, [2, 0]);
+
+  const b = engine();
+  const [bp, br] = [b.state.players[0], b.state.players[1]];
+  bp.position = { x: 4, z: 3 };
+  br.position = { x: 8, z: -1 };
+  b.step({ [bp.id]: { ...cmd, pass: true, targetId: br.id, passType: 'bounce' } });
+  for (let i = 0; i < 70; i++) b.step();
+  assert.equal(b.state.ball.ownerId, br.id);
+});
+
+test('and-one layups and five team fouls trigger regulation bonus and period reset', () => {
+  let sawAndOne = false;
+  for (let seed = 1; seed < 250 && !sawAndOne; seed++) {
+    const roster = structuredClone(teams);
+    roster[0].roster[0].ratings.finishing = 95;
+    roster[0].roster[0].ratings.strength = 95;
+    const g = createEngine(roster, { playersPerTeam: 1, seed });
+    const [shooter, defender] = g.state.players;
+    shooter.position = { x: 11.4, z: 0 };
+    defender.position = { x: 12.15, z: 0 };
+    for (let i = 0; i < 37; i++) g.step({ [shooter.id]: { ...cmd, shoot: true }, [defender.id]: { ...cmd, contest: true } });
+    g.step({ [defender.id]: { ...cmd, contest: true } });
+    if (g.state.events.some(e => e.type === 'foul' && e.detail?.includes('And-1'))) {
+      for (let i = 0; i < 80; i++) g.step();
+      if (g.state.score[0] === 2) {
+        assert.equal(g.state.freeThrow?.andOne, true);
+        assert.equal(g.state.freeThrow?.remaining, 1);
+        sawAndOne = true;
+      }
+    }
+  }
+  assert.ok(sawAndOne, 'should observe an And-1 play');
+
+  const bonus = engine({ seed: 11 });
+  const [handler, pest] = [bonus.state.players[0], bonus.state.players[5]];
+  for (let t = 0; t < 6000 && (bonus.state.teamFouls?.[1] ?? 0) < 5; t++) {
+    bonus.state.clock = 300;
+    bonus.state.shotClock = 24;
+    if (bonus.state.phase === 'live') {
+      handler.position = { x: 2, z: 0 };
+      pest.position = { x: 2.8, z: 0 };
+      if (bonus.state.ball.ownerId === pest.id) {
+        bonus.step({ [pest.id]: { ...cmd, pass: true } });
+        continue;
+      }
+      bonus.step({ [pest.id]: { ...cmd, steal: true } });
+      if (bonus.state.ball.ownerId && bonus.state.ball.ownerId !== handler.id) {
+        const cur = bonus.state.players.find(q => q.id === bonus.state.ball.ownerId)!;
+        if (cur.side === 1) { bonus.state.ball.ownerId = handler.id; bonus.state.possession = 0; }
+      }
+    } else {
+      bonus.step();
+    }
+  }
+  assert.ok((bonus.state.teamFouls?.[1] ?? 0) >= 5);
+  assert.ok(bonus.state.events.some(e => e.detail?.includes('Bonus (2 FT)')));
+  while (bonus.state.freeThrow || bonus.state.phase === 'dead') bonus.step();
+  bonus.state.clock = 1 / 60;
+  bonus.step();
+  assert.deepEqual(bonus.state.teamFouls, [0, 0]);
+});
+
+test('contesting and low stamina slow horizontal movement', () => {
+  const free = engine();
+  const contesting = engine();
+  const fatigued = engine();
+  fatigued.state.players[0].stamina = 5;
+  for (let i = 0; i < 20; i++) {
+    free.step({ 'home-0': { move: { x: 0, z: 1 } } });
+    contesting.step({ 'home-0': { move: { x: 0, z: 1 }, contest: true } });
+    fatigued.step({ 'home-0': { move: { x: 0, z: 1 } } });
+  }
+  assert.ok(contesting.state.players[0].position.z < free.state.players[0].position.z);
+  assert.ok(fatigued.state.players[0].position.z < free.state.players[0].position.z);
+});

@@ -16,15 +16,26 @@ export type Team = {
   id: string; city: string; name: string; abbreviation: string; color: string; accent: string;
   conference: 'East' | 'West'; roster: Player[];
 };
+export type OffensePlay = 'motion' | 'pickAndRoll' | 'iso' | 'fiveOut';
+export type DefenseScheme = 'man' | 'zone23' | 'switch' | 'press';
+export type ShotTimingGrade = 'Green' | 'Excellent' | 'Slightly Early' | 'Slightly Late' | 'Early' | 'Late';
+export type ContestLevel = 'Open' | 'Light' | 'Tight' | 'Smothered';
+export type ShotFeedback = {
+  playerId: string; tick: number; timing: ShotTimingGrade; contest: ContestLevel;
+  style: string; grade: number; green?: boolean; bank?: boolean;
+};
+export type FreeThrowState = { shooterId: string; remaining: number; total: number; andOne?: boolean };
 export type Control = {
   move: Vec2; sprint?: boolean; shoot?: boolean; pass?: boolean; targetId?: string;
   passType?: 'chest' | 'bounce' | 'lob'; contest?: boolean; steal?: boolean;
   screen?: boolean; dribble?: boolean; timeout?: boolean; substituteId?: string;
   shotType?: 'jump' | 'layup' | 'dunk' | 'floater' | 'hook' | 'fadeaway';
+  pumpFake?: boolean; callScreen?: boolean; callPass?: boolean;
+  offensePlay?: OffensePlay; defenseScheme?: DefenseScheme;
 };
 export type GamePlayer = {
   id: string; side: Side; profile: Player; position: Vec2; velocity: Vec2; facing: number;
-  stamina: number; pose: 'idle' | 'run' | 'dribble' | 'shoot' | 'contest' | 'screen';
+  stamina: number; pose: 'idle' | 'run' | 'dribble' | 'shoot' | 'contest' | 'screen' | 'pumpFake' | 'steal' | 'slide';
 };
 export type Ball = {
   position: Vec3; velocity: Vec3; ownerId: string | null;
@@ -44,6 +55,8 @@ export type GameState = {
   period: number; clock: number; shotClock: number; possession: Side;
   phase: 'live' | 'dead' | 'final'; events: GameEvent[];
   config: GameConfig; charge: Record<string, number>;
+  teamFouls?: [number, number]; freeThrow?: FreeThrowState | null; shotFeedback?: ShotFeedback | null;
+  offensePlay?: [OffensePlay, OffensePlay]; defenseScheme?: [DefenseScheme, DefenseScheme];
 };
 export interface Engine {
   readonly state: GameState;

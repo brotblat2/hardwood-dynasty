@@ -31,6 +31,9 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
   let screen = 0;
   let gather = 0;
   let dribble = 0;
+  let slide = 0;
+  let pumpFake = 0;
+  let stealSwipe = 0;
   let speed = 0;
   let wasContesting = false;
 
@@ -58,32 +61,39 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
     contest = lerp(contest, Number(contesting), fast);
     gather = lerp(gather, charge > 0 ? 0.48 + clamp(charge / 0.68, 0, 1) * 0.48 : 0, fast);
     dribble = lerp(dribble, Number(Boolean(held)), fast);
-
+    slide = lerp(slide, Number(player.pose === 'slide'), fast);
+    pumpFake = lerp(pumpFake, Number(player.pose === 'pumpFake'), fast);
     const age = event ? (tick - event.tick) / TICK_RATE : Infinity;
+    stealSwipe = lerp(stealSwipe, Number(player.pose === 'steal' || (event?.type === 'steal' && age < 0.32)), fast);
+
     const shot = event?.type === 'shot' && age < 0.53 ? clamp(1 - Math.max(0, age - 0.2) / 0.33, 0, 1) : 0;
     const dunk = shot > 0 && event?.detail?.startsWith('Dunk');
-    const highFinish = dunk || (shot > 0 && /^(Layup|Hook|Floater)/.test(event?.detail ?? ''));
+    const hookShot = shot > 0 && event?.detail?.startsWith('Hook');
+    const highFinish = dunk || (shot > 0 && /^(Layup|Hook|Floater|Alley-oop)/.test(event?.detail ?? ''));
     const fade = shot > 0 && event?.detail?.startsWith('Fadeaway');
     const passing = event?.type === 'pass' && age < 0.36 ? Math.sin((age + 0.07) / 0.43 * Math.PI) : 0;
     const contestAge = lastContest < 0 ? Infinity : (tick - lastContest) / TICK_RATE;
-    const jumpArc = (age: number, duration: number) => age < duration ? Math.sin(Math.PI * (age + 0.035) / (duration + 0.035)) : 0;
-    const jump = Math.max(shot ? jumpArc(age, 0.53) * (dunk ? 0.55 : 0.31) : 0, jumpArc(contestAge, 0.48) * 0.34,
+    const jumpArc = (t: number, duration: number) => t < duration ? Math.sin(Math.PI * (t + 0.035) / (duration + 0.035)) : 0;
+    const gatherJump = charge > 0 ? clamp((charge - 0.20) / 0.42, 0, 1) * 0.30 : 0;
+    const lateGather = charge > 0 ? clamp((charge - 0.34) / 0.28, 0, 1) : 0;
+    const jump = Math.max(gatherJump, shot ? jumpArc(age, 0.53) * (dunk ? 0.62 : 0.31) : 0, jumpArc(contestAge, 0.48) * 0.34,
       event?.type === 'rebound' || event?.type === 'block' ? jumpArc(age, 0.42) * 0.26 : 0);
     const defense = Math.max(contest, event?.type === 'rebound' || event?.type === 'block' ? jumpArc(age, 0.45) : 0);
     const run = movement * (1 - jump * 0.92) * (1 - screen * 0.84);
-    const crouch = movement * 0.09 + screen * 0.12 + gather * (1 - shot) * 0.13;
+    const gatherDip = charge > 0 ? clamp(1 - Math.max(0, charge - 0.22) / 0.16, 0, 1) : 0;
+    const crouch = movement * 0.09 + screen * 0.12 + gather * (1 - shot) * gatherDip * 0.14 + slide * 0.10 + pumpFake * 0.14;
     pose.rise = jump + (0.008 + (1 - Math.cos(stride * 2)) * 0.023) * run;
     pose.crouch = crouch;
-    pose.tilt = run * 0.15 + screen * 0.12 + gather * 0.08 - (fade ? shot * 0.22 : 0);
+    pose.tilt = run * 0.15 + screen * 0.12 + gather * 0.08 + stealSwipe * 0.28 - (fade ? shot * 0.36 : 0);
     pose.roll = -lateral * run * 0.11 + Math.sin(stride) * run * 0.035;
-    pose.twist = Math.sin(stride) * 0.1 * run + (highFinish ? shot * 0.19 : 0);
+    pose.twist = Math.sin(stride) * 0.1 * run + stealSwipe * 0.35 + (highFinish ? shot * 0.19 : 0);
 
     for (let i = 0; i < 2; i++) {
       const sign = i === 0 ? -1 : 1;
       const step = stride + i * Math.PI;
       const swing = Math.sin(step) * run * 0.46;
       const lift = Math.max(0, Math.cos(step)) ** 1.5 * run * 0.26;
-      const spacing = thickness * 0.143 + screen * 0.16;
+      const spacing = thickness * 0.143 + screen * 0.16 + slide * 0.15;
       const leg = legs[i];
       change(leg.start, sign * 0.121 * thickness, 1.085 - crouch * 0.88, 0);
       change(leg.joint, sign * (spacing + 0.007) + swing * lateral * 0.25, 0.545 + lift * 0.43 - crouch * 0.52,
@@ -101,6 +111,8 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
         -swing * 0.73 + run * 0.25 + 0.036);
       blend(arm.joint, sign * 0.332, 1.304 - crouch, 0.087, screen);
       blend(arm.end, sign * 0.075, 1.22 - crouch, 0.237, screen);
+      blend(arm.joint, sign * 0.42, 1.34 - crouch, 0.08, slide);
+      blend(arm.end, sign * 0.52, 1.28 - crouch, 0.22, slide);
       if (held) {
         const dx = held.x - player.position.x;
         const dz = held.z - player.position.z;
@@ -117,12 +129,24 @@ export function makeMotion(stature: number, thickness: number, hash: number) {
       }
       blend(arm.joint, sign * 0.236, 1.43 - crouch + gather * 0.25, 0.177, gather);
       blend(arm.end, sign * 0.112, 1.51 - crouch + gather * 0.3, 0.31, gather);
+      blend(arm.joint, sign * 0.21, 1.78, 0.20, lateGather);
+      blend(arm.end, sign * 0.12, 2.04, 0.25, lateGather);
+      blend(arm.joint, sign * 0.22, 1.62 - crouch, 0.24, pumpFake);
+      blend(arm.end, sign * 0.11, 1.88 - crouch, 0.32, pumpFake);
       blend(arm.joint, sign * 0.369, 1.825 - crouch, 0.11, defense);
       blend(arm.end, sign * (i === 1 ? 0.36 : 0.50), 2.118 - crouch - (i === 1 ? 0 : 0.16), 0.16, defense);
+      if (i === 1) {
+        blend(arm.joint, 0.24, 1.46 - crouch, 0.34, stealSwipe);
+        blend(arm.end, 0.12, 1.32 - crouch, 0.68, stealSwipe);
+      } else {
+        blend(arm.joint, -0.34, 1.35 - crouch, -0.14, stealSwipe);
+        blend(arm.end, -0.40, 1.24 - crouch, -0.22, stealSwipe);
+      }
       blend(arm.joint, sign * 0.196, 1.40 - crouch, 0.34, passing);
       blend(arm.end, sign * 0.135, 1.47 - crouch, 0.65, passing);
-      blend(arm.joint, sign * (highFinish ? 0.32 : 0.217), i === 0 && highFinish ? 1.5 : 1.875, 0.2, shot);
-      blend(arm.end, sign * (highFinish ? 0.31 : 0.131), highFinish ? (i === 1 ? 2.26 : 1.53) : (i === 1 ? 2.15 : 1.99),
+      const hookOffset = hookShot && i === 1 ? 0.24 : 0;
+      blend(arm.joint, sign * (highFinish ? 0.32 : 0.217) + hookOffset, i === 0 && highFinish ? 1.5 : 1.875, 0.2, shot);
+      blend(arm.end, sign * (highFinish ? 0.31 : 0.131) + hookOffset, highFinish ? (i === 1 ? (dunk ? 2.34 : 2.26) : 1.53) : (i === 1 ? 2.15 : 1.99),
         0.22 + Math.min(age, 0.4) * 0.43, shot);
       arm.pitch = -shot * 0.84 - passing * 0.86;
     }

@@ -7,11 +7,13 @@ export const BALL_RADIUS = 0.122;
 const RING_RADIUS = 0.235;
 const RING_TUBE = 0.021;
 export const RIM_CLEARANCE = RING_RADIUS - RING_TUBE - BALL_RADIUS;
-const BOARD_OFFSET = 0.39;
-const BOARD_HALF_DEPTH = 0.0275;
-const BOARD_HALF_WIDTH = 0.91;
-const BOARD_BOTTOM = COURT.rimHeight - 0.0675;
-const BOARD_TOP = COURT.rimHeight + 0.9875;
+export const BOARD_OFFSET = 0.39;
+export const BOARD_HALF_DEPTH = 0.0275;
+export const BOARD_HALF_WIDTH = 0.91;
+export const BOARD_BOTTOM = COURT.rimHeight - 0.0675;
+export const BOARD_TOP = COURT.rimHeight + 0.9875;
+export const FLOOR_RESTITUTION = 0.72;
+export const BOARD_RESTITUTION = 0.69;
 const INERTIA = 2 / 3; // A basketball's mass is concentrated in its shell.
 const EPSILON = 0.0001;
 
@@ -30,6 +32,34 @@ const clamp = (value: number, low: number, high: number) => Math.max(low, Math.m
 
 export function velocityFor(start: Vec3, end: Vec3, time: number) {
   return vector((end.x - start.x) / time, (end.y - start.y) / time + GRAVITY * time / 2, (end.z - start.z) / time);
+}
+
+export function bankVelocityFor(start: Vec3, end: Vec3, boardFaceX: number, duration: number): { velocity: Vec3; glassPoint: Vec3 } | null {
+  const dx1 = boardFaceX - start.x;
+  const dx2 = boardFaceX - end.x;
+  const d1 = Math.abs(dx1);
+  const d2 = Math.abs(dx2);
+  if (d1 < 0.25 || dx1 * dx2 <= 0) return null;
+  const t1 = duration / (1 + d2 / (BOARD_RESTITUTION * d1));
+  const t2 = duration - t1;
+  const vx = dx1 / t1;
+  const vz = (end.z - start.z) / (t1 + 0.88 * t2);
+  const vy = (end.y - start.y + 0.5 * GRAVITY * duration * duration) / duration + 0.16;
+  const glassPoint = vector(boardFaceX, start.y + vy * t1 - 0.5 * GRAVITY * t1 * t1, start.z + vz * t1);
+  if (glassPoint.y < COURT.rimHeight + 0.24 || glassPoint.y > BOARD_TOP - 0.10 || Math.abs(glassPoint.z) > BOARD_HALF_WIDTH - 0.14) {
+    return null;
+  }
+  return { velocity: vector(vx, vy, vz), glassPoint };
+}
+
+export function bouncePassVelocity(start: Vec3, end: Vec3, duration: number): { velocity: Vec3; floorTime: number } {
+  const f = 0.58;
+  const floorTime = duration * f;
+  const horizComp = 1 / (f + (1 - f) * 0.86);
+  const vx = (end.x - start.x) / duration * horizComp;
+  const vz = (end.z - start.z) / duration * horizComp;
+  const vy = (BALL_RADIUS - start.y) / floorTime + 0.5 * GRAVITY * floorTime;
+  return { velocity: vector(vx, vy, vz), floorTime };
 }
 
 function rimDistance(p: Vec3, rimX: number): Sample {
@@ -102,7 +132,7 @@ function bounce(ball: PhysicalBall, hit: Contact) {
   const normalSpeed = dot(ball.velocity, hit.normal);
   if (normalSpeed >= 0) return;
   const floor = hit.surface === 'floor';
-  const restitution = floor ? (normalSpeed > -0.45 ? 0 : 0.72) : hit.surface === 'rim' ? 0.64 : 0.69;
+  const restitution = floor ? (normalSpeed > -0.45 ? 0 : FLOOR_RESTITUTION) : hit.surface === 'rim' ? 0.64 : BOARD_RESTITUTION;
   const friction = floor ? 0.42 : hit.surface === 'rim' ? 0.14 : 0.18;
   const normalImpulse = -(1 + restitution) * normalSpeed;
   const contactArm = scale(hit.normal, -BALL_RADIUS);

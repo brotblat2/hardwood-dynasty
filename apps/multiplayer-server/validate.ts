@@ -36,8 +36,11 @@ export function control(v: unknown): v is Control {
   for (const [key, value] of Object.entries(v)) {
     if (key === 'move') continue;
     if (key === 'passType' && ['chest','bounce','lob'].includes(String(value))) continue;
+    if (key === 'shotType' && ['jump','layup','dunk','floater','hook','fadeaway'].includes(String(value))) continue;
+    if (key === 'offensePlay' && ['motion','pickAndRoll','iso','fiveOut'].includes(String(value))) continue;
+    if (key === 'defenseScheme' && ['man','zone23','switch','press'].includes(String(value))) continue;
     if (key === 'targetId' && id(value)) continue;
-    if (['sprint','shoot','pass','contest','steal','screen','dribble'].includes(key) && typeof value === 'boolean') continue;
+    if (['sprint','shoot','pass','contest','steal','screen','dribble','pumpFake','callScreen','callPass'].includes(key) && typeof value === 'boolean') continue;
     return false;
   }
   return true;

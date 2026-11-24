@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TICK_RATE } from '../contracts/index.ts';
-import type { GameState, Vec2, Vec3 } from '../contracts/index.ts';
+import type { GameState, Team, Vec2, Vec3 } from '../contracts/index.ts';
 import { makeArena, makeHoops } from './arena.ts';
 import { makeBall, makeCourt, makeCourtTexture } from './court.ts';
 import { makePlayerFactory } from './player.ts';
@@ -9,15 +9,17 @@ import { createCanvasFallback } from './fallback.ts';
 import { makeGameCamera } from './camera.ts';
 import { motionEvents } from './motion.ts';
 
-export type Camera = 'broadcast' | 'baseline' | 'courtside' | 'player' | 'cinematic';
+export type Camera = 'broadcast' | '2k' | 'baseline' | 'courtside' | 'player' | 'cinematic';
 export type Quality = 'low' | 'high';
 export type RendererOptions = { quality?: Quality; camera?: Camera };
+export type RenderHints = { passTargetId?: string };
 export type GameRenderer = {
-  draw(state: GameState, selectedId?: string): void;
+  draw(state: GameState, selectedId?: string, hints?: RenderHints): void;
   setCamera(camera: Camera): void;
   setQuality(quality: Quality): void;
   dispose(): void;
   projectMove(move: Vec2): Vec2;
+  projectPoint(x: number, y: number, z: number): { x: number; y: number; visible: boolean };
   pickPlayer(x: number, y: number): string | undefined;
 };
 
@@ -74,11 +76,12 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   const placeCamera = makeGameCamera(perspective);
   let lastFrame = 0;
   let lastCrowdDraw = -Infinity;
-  let floorMode: boolean | undefined;
+  let floorKey: string | undefined;
   let lastWidth = 0;
   let lastHeight = 0;
   let lastRatio = 0;
   let lastBallTick = -1;
+  let lastTrailTick = -1;
   const ballAxis = new THREE.Vector3();
   const ballTurn = new THREE.Quaternion();
 
@@ -110,10 +113,11 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   const ball = makeBall(anisotropy);
   const factories = makePlayerFactory();
   const players = new Map<string, ReturnType<typeof factories.build>>();
-  const textures = new Map<boolean, THREE.Texture>();
+  const textures = new Map<string, THREE.Texture>();
   const samples = new Map<string, PickTarget>();
   const projectedFeet = new THREE.Vector3();
   const projectedHead = new THREE.Vector3();
+  const projectedTemp = new THREE.Vector3();
   scene.add(arena.group, court, hoops.group, ball);
 
   const ballShadow = new THREE.Mesh(
@@ -123,6 +127,28 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   ballShadow.rotation.x = -Math.PI / 2;
   ballShadow.position.y = 0.014;
   scene.add(ballShadow);
+
+  const passRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.37, 0.43, 32),
+    new THREE.MeshBasicMaterial({ color: 0x62e5ff, transparent: true, opacity: 0.82, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  passRing.rotation.x = -Math.PI / 2;
+  passRing.position.y = 0.023;
+  passRing.renderOrder = 3;
+  passRing.visible = false;
+  scene.add(passRing);
+
+  const trailGeometry = new THREE.SphereGeometry(0.085, 10, 8);
+  const trailMeshes = Array.from({ length: 6 }, (_, i) => {
+    const mesh = new THREE.Mesh(
+      trailGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xffa652, transparent: true, opacity: (i + 1) / 7 * 0.28, depthWrite: false }),
+    );
+    mesh.visible = false;
+    scene.add(mesh);
+    return mesh;
+  });
+  const trailPoints: Vec3[] = [];
 
   function setQuality(next: Quality) {
     quality = next;
@@ -146,29 +172,36 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     return true;
   }
 
-  function setMode(blacktop: boolean) {
-    if (floorMode === blacktop) return;
-    floorMode = blacktop;
+  function setMode(blacktop: boolean, homeTeam?: Team) {
+    const key = blacktop ? 'blacktop' : `team:${homeTeam?.id ?? 'default'}`;
+    if (floorKey === key) return;
+    floorKey = key;
     arena.setOutdoor(blacktop);
+    arena.setTeam(blacktop ? undefined : homeTeam);
+    hoops.setOutdoor(blacktop);
     scene.background = blacktop ? outdoorColor : indoorColor;
     const fog = scene.fog as THREE.FogExp2;
     fog.color.copy(scene.background);
     fog.density = blacktop ? 0.014 : 0.012;
     ambient.color.set(blacktop ? 0xd0edff : 0xffecd2);
-    key.color.set(blacktop ? 0xffe2be : 0xfff0d8);
-    if (!textures.has(blacktop)) textures.set(blacktop, makeCourtTexture(blacktop, anisotropy));
+    keyLight(blacktop);
+    if (!textures.has(key)) textures.set(key, makeCourtTexture(blacktop, anisotropy, homeTeam));
     court.material.roughness = blacktop ? 0.82 : 0.39;
     court.material.clearcoat = blacktop ? 0 : 0.46;
-    court.material.map = textures.get(blacktop)!;
+    court.material.map = textures.get(key)!;
     court.material.needsUpdate = true;
   }
 
-  function draw(state: GameState, selectedId?: string) {
+  function keyLight(blacktop: boolean) {
+    key.color.set(blacktop ? 0xffdfb3 : 0xfff0d8);
+  }
+
+  function draw(state: GameState, selectedId?: string, hints?: RenderHints) {
     if (!resize()) return;
     const time = performance.now() / 1_000;
     const dt = Math.min(0.1, time - lastFrame);
     lastFrame = time;
-    setMode(state.config.mode === 'blacktop');
+    setMode(state.config.mode === 'blacktop', state.teams[0]);
     if (time - lastCrowdDraw > (quality === 'high' ? 0.076 : 0.16)) {
       const score = state.events.findLast((event) => event.type === 'score');
       const cheer = score ? Math.max(0, 1 - (state.tick - score.tick) / (2.3 * TICK_RATE)) : 0;
@@ -211,8 +244,44 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
       players.delete(id);
     }
 
+    const passTarget = hints?.passTargetId && hints.passTargetId !== selectedId
+      ? state.players.find(player => player.id === hints.passTargetId)
+      : undefined;
+    if (passTarget) {
+      passRing.visible = true;
+      passRing.position.set(passTarget.position.x, 0.023, passTarget.position.z);
+      passRing.scale.setScalar(1 + Math.sin(time * 7) * 0.05);
+    } else {
+      passRing.visible = false;
+    }
+
     const { position, velocity, ownerId, spin } = state.ball as typeof state.ball & { spin?: Vec3 };
-    ball.position.set(position.x, Math.max(position.y, 0.122), position.z);
+    const ballY = Math.max(position.y, 0.122);
+    ball.position.set(position.x, ballY, position.z);
+    if (state.ball.kind === 'shot' || state.ball.kind === 'pass') {
+      if (state.tick < lastTrailTick) trailPoints.length = 0;
+      if (state.tick !== lastTrailTick) {
+        trailPoints.push({ x: position.x, y: ballY, z: position.z });
+        if (trailPoints.length > trailMeshes.length) trailPoints.shift();
+        lastTrailTick = state.tick;
+      }
+      for (let i = 0; i < trailMeshes.length; i++) {
+        const idx = trailPoints.length - 1 - (trailMeshes.length - 1 - i);
+        const pt = idx >= 0 ? trailPoints[idx] : undefined;
+        const mesh = trailMeshes[i];
+        if (pt && idx < trailPoints.length - 1) {
+          mesh.visible = true;
+          mesh.position.set(pt.x, pt.y, pt.z);
+          mesh.scale.setScalar(0.45 + (i / trailMeshes.length) * 0.55);
+        } else {
+          mesh.visible = false;
+        }
+      }
+    } else {
+      trailPoints.length = 0;
+      for (const mesh of trailMeshes) mesh.visible = false;
+    }
+
     const elapsed = Math.max(0, Math.min(8, state.tick - lastBallTick)) / TICK_RATE;
     if (state.tick < lastBallTick) ball.quaternion.identity();
     if (spin) ballAxis.set(spin.x, spin.y, spin.z);
@@ -225,6 +294,15 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     ballShadow.scale.setScalar(1 + Math.min(position.y, 8) * 0.18);
     ballShadow.material.opacity = 0.25 / (1 + position.y * 0.24);
     webgl.render(scene, perspective);
+  }
+
+  function projectPoint(x: number, y: number, z: number) {
+    projectedTemp.set(x, y, z).project(perspective);
+    return {
+      x: (projectedTemp.x + 1) * 0.5 * element.clientWidth,
+      y: (1 - projectedTemp.y) * 0.5 * element.clientHeight,
+      visible: projectedTemp.z >= -1 && projectedTemp.z <= 1,
+    };
   }
 
   function pickPlayer(x: number, y: number) {
@@ -260,5 +338,5 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     element.remove();
   }
 
-  return { draw, setQuality, setCamera(camera) { cameraMode = camera; }, dispose, pickPlayer, projectMove: move => courtMovement(perspective, move) };
+  return { draw, setQuality, setCamera(camera) { cameraMode = camera; }, dispose, pickPlayer, projectPoint, projectMove: move => courtMovement(perspective, move) };
 }

@@ -1,6 +1,14 @@
 import type { Control, GamePlayer, Vec2 } from '../contracts/index.ts';
+import { selectPassTarget } from '../game-engine/index.ts';
 
-export type PlayerControl = Control & { switchPlayer?: boolean; passAim?: Vec2 };
+export type PlayerControl = Control & {
+  switchPlayer?: boolean;
+  passAim?: Vec2;
+  iconPassToggle?: boolean;
+  iconSlot?: 0 | 1 | 2 | 3;
+  callPlay?: boolean;
+  proStick?: Vec2;
+};
 
 export const DEFAULT_KEYBOARD_BINDINGS = {
   up: ['KeyW', 'ArrowUp'],
@@ -17,11 +25,14 @@ export const DEFAULT_KEYBOARD_BINDINGS = {
   screen: ['KeyE'],
   dribble: ['KeyF'],
   switchPlayer: ['KeyQ'],
+  pumpFake: ['KeyV'],
+  iconPass: ['Tab'],
+  callPlay: ['KeyR'],
 } as const;
 
 export type InputAction = keyof typeof DEFAULT_KEYBOARD_BINDINGS;
 export type KeyboardBindings = Record<InputAction, readonly string[]>;
-export type TouchAction = Exclude<InputAction, 'up' | 'down' | 'left' | 'right'>;
+export type TouchAction = Exclude<InputAction, 'up' | 'down' | 'left' | 'right' | 'iconPass' | 'callPlay'>;
 export type TouchInput = {
   move: (position: Vec2) => void;
   press: (pointer: number, action: TouchAction) => void;
@@ -29,21 +40,66 @@ export type TouchInput = {
   cancel: (pointer: number) => void;
   clear: () => void;
 };
-type Source = { move: Vec2; aim: Vec2; down: (action: TouchAction) => boolean };
+type Source = { move: Vec2; aim: Vec2; down: (action: InputAction) => boolean };
 type GamepadInput = Pick<Gamepad, 'axes' | 'buttons'>;
+
+export function mergeBindings(partial?: Partial<Record<string, readonly string[]>>): KeyboardBindings {
+  const merged = { ...DEFAULT_KEYBOARD_BINDINGS } as Record<InputAction, readonly string[]>;
+  if (!partial) return merged;
+  for (const action of Object.keys(DEFAULT_KEYBOARD_BINDINGS) as InputAction[]) {
+    const custom = partial[action];
+    if (Array.isArray(custom) && custom.length > 0) merged[action] = custom;
+  }
+  return merged;
+}
+
+const KEY_DISPLAY: Record<string, string> = {
+  Space: 'Space', Tab: 'Tab', ShiftLeft: 'Shift', ShiftRight: 'Shift',
+  ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+};
+
+function formatKeys(codes: readonly string[]) {
+  const names: string[] = [];
+  for (const code of codes) {
+    const label = KEY_DISPLAY[code] ?? code.replace(/^Key/, '').replace(/^Digit/, '');
+    if (!names.includes(label)) names.push(label);
+  }
+  return names.join(' / ');
+}
+
+export function formatKeyboardHints(bindings: Partial<KeyboardBindings> = DEFAULT_KEYBOARD_BINDINGS): [string, string][] {
+  const b = mergeBindings(bindings);
+  return [
+    ['Move', `${formatKeys(b.up)} ${formatKeys(b.left)} ${formatKeys(b.down)} ${formatKeys(b.right)}`],
+    ['Sprint', formatKeys(b.sprint)],
+    ['Shoot / Layup / Dunk', `Hold & release ${formatKeys(b.shoot)}`],
+    ['Pump fake', formatKeys(b.pumpFake)],
+    ['Pass (aim with move)', formatKeys(b.pass)],
+    ['Bounce pass', formatKeys(b.bouncePass)],
+    ['Lob / Alley-oop', formatKeys(b.lobPass)],
+    ['Icon pass', `${formatKeys(b.iconPass)}, then 1–4`],
+    ['Dribble / Step-back', formatKeys(b.dribble)],
+    ['Call screen / Set screen', formatKeys(b.screen)],
+    ['Contest / Rebound', formatKeys(b.contest)],
+    ['Steal / Deflect', formatKeys(b.steal)],
+    ['Switch player', formatKeys(b.switchPlayer)],
+    ['Cycle play / defense', formatKeys(b.callPlay)],
+  ];
+}
 
 export const KEYBOARD_HINTS = [
   ['Move', 'WASD or arrows'], ['Sprint', 'Shift'], ['Shoot', 'Hold and release Space'],
-  ['Pass', 'J, aim with movement'], ['Bounce pass', 'K'], ['Lob pass', 'L'],
+  ['Pump fake', 'V'], ['Pass', 'J, aim with movement'], ['Bounce pass', 'K'],
+  ['Lob / Alley-oop', 'L'], ['Icon pass', 'Tab, then 1–4'],
   ['Contest / rebound', 'C'], ['Steal', 'X'], ['Switch player', 'Q'],
-  ['Screen', 'E'], ['Dribble move', 'F'],
+  ['Screen / call pick', 'E'], ['Dribble move', 'F'], ['Play / scheme', 'R'],
 ] as const;
 
 export const GAMEPAD_HINTS = [
-  ['Move', 'Left stick or D-pad'], ['Sprint', 'RT / R2'], ['Shoot', 'Hold and release X / Square'],
-  ['Pass', 'A / Cross, aim with either stick'], ['Bounce pass', 'LT / L2 + pass'], ['Lob pass', 'Left stick click + pass'],
-  ['Contest / rebound', 'Y / Triangle'], ['Steal', 'B / Circle'], ['Switch player', 'LB / L1'],
-  ['Screen', 'RB / R1'], ['Dribble move', 'Right stick click'],
+  ['Move', 'Left stick or D-pad'], ['Sprint', 'RT / R2'], ['Shoot / Pro-Stick', 'Hold X / Square or Right Stick'],
+  ['Pass', 'A / Cross, aim with either stick'], ['Bounce pass', 'LT / L2 + pass'], ['Lob / Alley-oop', 'Left stick click + pass'],
+  ['Contest / rebound', 'Y / Triangle'], ['Steal / Pump fake', 'B / Circle'], ['Switch player', 'LB / L1'],
+  ['Screen / call pick', 'RB / R1'], ['Dribble move', 'Flick Right Stick or R3'], ['Play / scheme', 'Start / Menu'],
 ] as const;
 
 export function limitMove(x: number, z: number): Vec2 {
@@ -71,7 +127,7 @@ function gamepadSource(gamepad?: GamepadInput): Source {
   const stick = gamepadMove(gamepad?.axes[0] ?? 0, gamepad?.axes[1] ?? 0);
   const aim = gamepadMove(gamepad?.axes[2] ?? 0, gamepad?.axes[3] ?? 0, 0.2);
   const pass = button(0);
-  const buttons: Partial<Record<TouchAction, boolean>> = {
+  const buttons: Partial<Record<InputAction, boolean>> = {
     sprint: button(7),
     shoot: button(2),
     pass,
@@ -82,6 +138,8 @@ function gamepadSource(gamepad?: GamepadInput): Source {
     screen: button(5),
     dribble: button(11),
     switchPlayer: button(4),
+    iconPass: button(8),
+    callPlay: button(9),
   };
   return {
     move: dpad.x || dpad.z ? dpad : stick,
@@ -91,49 +149,98 @@ function gamepadSource(gamepad?: GamepadInput): Source {
 }
 
 export function selectDirectionalPassTarget(passer: GamePlayer, teammates: readonly GamePlayer[], aim: Vec2) {
-  const magnitude = Math.hypot(aim.x, aim.z);
-  if (!Number.isFinite(magnitude) || magnitude < PASS_AIM_MINIMUM) return undefined;
-  let best: string | undefined;
-  let bestScore = -Infinity;
-  for (const teammate of teammates) {
-    if (teammate.side !== passer.side || teammate.id === passer.id) continue;
-    const x = teammate.position.x - passer.position.x;
-    const z = teammate.position.z - passer.position.z;
-    const distance = Math.hypot(x, z);
-    if (distance < 0.01) continue;
-    const alignment = (x * aim.x + z * aim.z) / (distance * magnitude);
-    if (alignment < 0.35) continue;
-    const score = alignment * 4 - distance * 0.07;
-    if (score <= bestScore) continue;
-    best = teammate.id;
-    bestScore = score;
+  return selectPassTarget(passer, teammates, aim);
+}
+
+export function selectSwitchTarget(
+  current: GamePlayer,
+  teammates: readonly GamePlayer[],
+  ballPos: Vec2,
+  aim: Vec2,
+  recentIds: readonly string[] = [],
+): string | undefined {
+  const candidates = teammates.filter(q => q.side === current.side && q.id !== current.id);
+  if (!candidates.length) return undefined;
+  const mag = Math.hypot(aim.x, aim.z);
+  if (Number.isFinite(mag) && mag >= 0.25) {
+    let best: string | undefined;
+    let bestScore = -Infinity;
+    for (const q of candidates) {
+      const dx = q.position.x - current.position.x;
+      const dz = q.position.z - current.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.01) continue;
+      const align = (dx * aim.x + dz * aim.z) / (d * mag);
+      if (align <= 0.25) continue;
+      const score = align * 5 - d * 0.08;
+      if (score > bestScore) { bestScore = score; best = q.id; }
+    }
+    if (best) return best;
   }
-  return best;
+  const sorted = [...candidates].sort((a, b) => {
+    const score = (q: GamePlayer) => Math.hypot(q.position.x - ballPos.x, q.position.z - ballPos.z) +
+      (candidates.length > 1 && recentIds.includes(q.id) ? 3.5 : 0);
+    return score(a) - score(b);
+  });
+  return sorted[0]?.id;
+}
+
+export function deriveShotType(
+  player: GamePlayer,
+  moveCourt: Vec2,
+  rim: Vec2,
+  options: { sprint?: boolean; dribble?: boolean; proStickCourt?: Vec2 } = {},
+): Control['shotType'] {
+  const dir = options.proStickCourt ?? moveCourt;
+  const toRimX = rim.x - player.position.x;
+  const toRimZ = rim.z - player.position.z;
+  const dist = Math.hypot(toRimX, toRimZ);
+  const dirLen = Math.hypot(dir.x, dir.z);
+  const toward = dist > 0.01 && dirLen > 0.15 ? (toRimX * dir.x + toRimZ * dir.z) / (dist * dirLen) : 0;
+  const isBig = player.profile.position === 'PF' || player.profile.position === 'C';
+  if (options.proStickCourt) {
+    if (toward > 0.45) return dist < 2.8 && options.sprint ? 'dunk' : dist < 3.4 ? 'layup' : 'floater';
+    if (toward < -0.45) return 'fadeaway';
+    return isBig ? 'hook' : 'floater';
+  }
+  if (options.dribble && dist < 5.5) return isBig ? 'hook' : 'floater';
+  if (dist < 2.6 && options.sprint && toward > 0.25) return 'dunk';
+  if (dist < 2.7 && toward > 0.25) return 'layup';
+  if (dist >= 2.6 && toward < -0.5) return 'fadeaway';
+  return undefined;
 }
 
 const passActions = ['lobPass', 'bouncePass', 'pass'] as const;
 type PassAction = (typeof passActions)[number];
 const heldActions = ['sprint', 'contest', 'steal', 'screen', 'dribble'] as const;
-const bufferedActions = [...passActions, 'switchPlayer', ...heldActions] as const;
+const tapActions = ['switchPlayer', 'pumpFake', 'iconPass', 'callPlay'] as const;
+const bufferedActions = [...passActions, ...tapActions, ...heldActions] as const;
 type BufferedAction = (typeof bufferedActions)[number];
+const slotCodes = ['Digit1', 'Digit2', 'Digit3', 'Digit4'] as const;
+type SlotIndex = 0 | 1 | 2 | 3;
 type TouchPress = { action: TouchAction };
 type BufferedPress = { action: BufferedAction; aim?: Vec2; touch?: TouchPress };
 const isPassAction = (action: BufferedAction): action is PassAction => passActions.some((pass) => pass === action);
 type ShootEdge = { down: boolean; touch?: TouchPress };
 
-export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEYBOARD_BINDINGS) {
+export function createInputState(initialBindings: Partial<KeyboardBindings> = DEFAULT_KEYBOARD_BINDINGS) {
   const keys = new Set<string>();
   const touchActions = new Map<number, TouchPress>();
   const presses: BufferedPress[] = [];
+  const slotPresses: SlotIndex[] = [];
   const shootEdges: ShootEdge[] = [];
   let lastShoot = false;
-  let bindings = initialBindings;
+  let bindings = mergeBindings(initialBindings);
   let touchMove = STILL;
   let pad = gamepadSource();
+  let stickHoldTicks = 0;
+  let stickPeak = 0;
+  let proStickShooting = false;
+  let proStickDir = STILL;
 
   const keyDown = (action: InputAction) => bindings[action].some((code) => keys.has(code));
   const touchDown = (action: TouchAction) => [...touchActions.values()].some((press) => press.action === action);
-  const shootDown = () => keyDown('shoot') || touchDown('shoot') || pad.down('shoot');
+  const shootDown = () => keyDown('shoot') || touchDown('shoot') || pad.down('shoot') || proStickShooting;
   const activeMove = () => {
     const keyMove = limitMove(
       Number(keyDown('right')) - Number(keyDown('left')),
@@ -163,12 +270,36 @@ export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEY
   };
   const sampleGamepad = (gamepad?: GamepadInput) => {
     const last = pad;
-    changeShoot(() => { pad = gamepadSource(gamepad); });
+    const nextPad = gamepadSource(gamepad);
+    const rightMag = Math.hypot(nextPad.aim.x, nextPad.aim.z);
+    const rawButtonShoot = keyDown('shoot') || touchDown('shoot') || nextPad.down('shoot');
+    changeShoot(() => {
+      pad = nextPad;
+      if (!nextPad.down('pass') && !rawButtonShoot) {
+        if (rightMag >= 0.58) {
+          stickHoldTicks++;
+          stickPeak = Math.max(stickPeak, rightMag);
+          proStickDir = nextPad.aim;
+          if (stickHoldTicks >= 6) proStickShooting = true;
+        } else {
+          if (stickPeak >= 0.62 && rightMag < 0.28 && stickHoldTicks > 0 && stickHoldTicks < 6) {
+            presses.push({ action: 'dribble' });
+          }
+          stickHoldTicks = 0;
+          stickPeak = 0;
+          proStickShooting = false;
+        }
+      } else {
+        stickHoldTicks = 0;
+        stickPeak = 0;
+        proStickShooting = false;
+      }
+    });
     if (pad.down('pass') && !last.down('pass')) {
       const action = passActions.find((candidate) => pad.down(candidate)) ?? 'pass';
       presses.push({ action, aim: aimForPass(activeMove()) });
     }
-    for (const action of ['switchPlayer', ...heldActions] as const) {
+    for (const action of [...tapActions, ...heldActions] as const) {
       if (pad.down(action) && !last.down(action)) presses.push({ action });
     }
   };
@@ -206,8 +337,8 @@ export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEY
   return {
     touch,
     sampleGamepad,
-    keyDown(code: string, nextBindings: KeyboardBindings) {
-      bindings = nextBindings;
+    keyDown(code: string, nextBindings: Partial<KeyboardBindings>) {
+      bindings = mergeBindings(nextBindings);
       if (keys.has(code)) return;
       const next = bufferedActions.filter((action) => bindings[action].includes(code) && !keyDown(action));
       changeShoot(() => { keys.add(code); });
@@ -216,18 +347,25 @@ export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEY
       for (const action of next) {
         if (!isPassAction(action)) presses.push({ action });
       }
+      const slotIdx = slotCodes.indexOf(code as (typeof slotCodes)[number]);
+      if (slotIdx >= 0 && !next.length) slotPresses.push(slotIdx as SlotIndex);
     },
     keyUp(code: string) { changeShoot(() => { keys.delete(code); }); },
     clear() {
       keys.clear();
       presses.length = 0;
+      slotPresses.length = 0;
       shootEdges.length = 0;
       lastShoot = false;
+      stickHoldTicks = 0;
+      stickPeak = 0;
+      proStickShooting = false;
+      proStickDir = STILL;
       touch.clear();
       pad = gamepadSource();
     },
-    read(nextBindings: KeyboardBindings, gamepad?: GamepadInput): PlayerControl {
-      bindings = nextBindings;
+    read(nextBindings: Partial<KeyboardBindings>, gamepad?: GamepadInput): PlayerControl {
+      bindings = mergeBindings(nextBindings);
       sampleGamepad(gamepad);
       while (shootEdges[0]?.down === lastShoot) shootEdges.shift();
       lastShoot = shootEdges.shift()?.down ?? shootDown();
@@ -237,6 +375,7 @@ export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEY
       const move = activeMove();
       const heldAim = aimForPass(move);
       const passAim = pass?.aim && Math.hypot(pass.aim.x, pass.aim.z) >= PASS_AIM_MINIMUM ? pass.aim : heldAim;
+      const iconSlot = slotPresses.shift();
       return {
         move,
         sprint: held('sprint'),
@@ -249,6 +388,11 @@ export function createInputState(initialBindings: KeyboardBindings = DEFAULT_KEY
         passType: pass && (pass.action === 'lobPass' ? 'lob' : pass.action === 'bouncePass' ? 'bounce' : 'chest'),
         passAim: pass && Math.hypot(passAim.x, passAim.z) >= PASS_AIM_MINIMUM ? passAim : undefined,
         switchPlayer: !!takePress(['switchPlayer']),
+        pumpFake: !!takePress(['pumpFake']),
+        iconPassToggle: !!takePress(['iconPass']),
+        callPlay: !!takePress(['callPlay']),
+        ...(iconSlot !== undefined ? { iconSlot } : {}),
+        ...(proStickShooting ? { proStick: proStickDir } : {}),
       };
     },
   };

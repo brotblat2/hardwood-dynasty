@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fixtureTeam } from '../packages/contracts/fixtures.ts';
 import type { GamePlayer } from '../packages/contracts/index.ts';
-import { createInputState, DEFAULT_KEYBOARD_BINDINGS as bindings, gamepadMove, selectDirectionalPassTarget } from '../packages/controls/input.ts';
+import {
+  createInputState, DEFAULT_KEYBOARD_BINDINGS as bindings, gamepadMove,
+  mergeBindings, selectDirectionalPassTarget, selectSwitchTarget,
+} from '../packages/controls/input.ts';
 
 test('movement normalizes diagonal input and typing opposite directions cancels', () => {
   const input = createInputState();
@@ -160,4 +163,53 @@ test('directional passing favors aligned teammates and leaves neutral aim to aut
   assert.equal(selectDirectionalPassTarget(passer, players, { x: 0, z: 1 }), near.id);
   assert.equal(selectDirectionalPassTarget(passer, players, { x: 0.1, z: 0 }), undefined);
   assert.equal(selectDirectionalPassTarget(passer, players, { x: -1, z: 0 }), undefined);
+});
+
+test('partial saved bindings safely merge with defaults and support icon passing', () => {
+  const legacy = { shoot: ['KeyU'] };
+  const merged = mergeBindings(legacy);
+  assert.deepEqual(merged.shoot, ['KeyU']);
+  assert.deepEqual(merged.pumpFake, ['KeyV']);
+  const input = createInputState(legacy);
+  input.keyDown('KeyV', legacy);
+  input.keyDown('Tab', legacy);
+  input.keyDown('Digit2', legacy);
+  const c = input.read(legacy);
+  assert.equal(c.pumpFake, true);
+  assert.equal(c.iconPassToggle, true);
+  assert.equal(c.iconSlot, 1);
+  assert.equal(input.read(legacy).pumpFake, false);
+});
+
+test('pro-stick hold initiates shot with direction and quick flick triggers dribble', () => {
+  const input = createInputState();
+  const buttons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));
+  const pad = { axes: [0, 0, 0.85, 0], buttons };
+  for (let i = 0; i < 6; i++) input.sampleGamepad(pad);
+  const holding = input.read(bindings, pad);
+  assert.equal(holding.shoot, true);
+  assert.ok(holding.proStick && holding.proStick.x > 0.5);
+  pad.axes = [0, 0, 0, 0];
+  assert.equal(input.read(bindings, pad).shoot, false);
+
+  pad.axes = [0, 0, 0.85, 0];
+  input.sampleGamepad(pad);
+  input.sampleGamepad(pad);
+  pad.axes = [0, 0, 0, 0];
+  input.sampleGamepad(pad);
+  const flick = input.read(bindings, pad);
+  assert.equal(flick.shoot, false);
+  assert.equal(flick.dribble, true);
+});
+
+test('smart player switching aligns directionally and avoids two-player ping-pong', () => {
+  const team = fixtureTeam('home');
+  const mk = (i: number, x: number, z: number): GamePlayer => ({
+    id: team.roster[i].id, profile: team.roster[i], side: 0,
+    position: { x, z }, velocity: { x: 0, z: 0 }, facing: 0, stamina: 100, pose: 'idle',
+  });
+  const cur = mk(0, 0, 0), near = mk(1, 1, 1), right = mk(2, 6, 0), third = mk(3, 2, -2);
+  const all = [cur, near, right, third];
+  assert.equal(selectSwitchTarget(cur, all, { x: 0, z: 0 }, { x: 1, z: 0 }), right.id);
+  assert.equal(selectSwitchTarget(cur, all, { x: 0, z: 0 }, { x: 0, z: 0 }, [near.id]), third.id);
 });

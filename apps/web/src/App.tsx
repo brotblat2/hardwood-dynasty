@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import type { Difficulty, GameState, Player, Team } from '../../../packages/contracts/index.ts';
 import { demoTeams, bobovTeam, parseRosterCsv, validateRoster } from '../../../packages/roster-data/index.ts';
 import type { RosterPack } from '../../../packages/roster-data/index.ts';
-import { DEFAULT_KEYBOARD_BINDINGS } from '../../../packages/controls/index.tsx';
+import { DEFAULT_KEYBOARD_BINDINGS, mergeBindings } from '../../../packages/controls/index.tsx';
 import type { KeyboardBindings } from '../../../packages/controls/index.tsx';
 import { createEngine } from '../../../packages/game-engine/index.ts';
 import type { MatchSetup, Camera } from './Match.tsx';
@@ -367,18 +367,19 @@ function PlayerCard({ player, close }: { player: Player; close(): void }) {
 
 const keyboardLabels: Record<keyof KeyboardBindings, string> = {
   up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
-  shoot: 'Shoot', pass: 'Pass', bouncePass: 'Bounce pass', lobPass: 'Lob pass', sprint: 'Sprint',
-  contest: 'Contest', steal: 'Steal', screen: 'Screen', dribble: 'Dribble move', switchPlayer: 'Switch player',
+  shoot: 'Shoot', pumpFake: 'Pump fake', pass: 'Pass', bouncePass: 'Bounce pass', lobPass: 'Lob pass',
+  iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Contest', steal: 'Steal', screen: 'Screen / pick',
+  dribble: 'Dribble move', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
 };
 export const keyName = (key: string) => key.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, 'Arrow ');
 
 function KeyboardSettings({ value, change }: { value: Settings; change(settings: Settings): void }) {
   const [pending, setPending] = useState<keyof KeyboardBindings>();
   const [message, setMessage] = useState('');
-  const keyboard = value.keyboard ?? DEFAULT_KEYBOARD_BINDINGS;
+  const keyboard = mergeBindings(value.keyboard);
   return <section className="panel form-panel compact-form keyboard-settings">
     <h2>Keyboard controls</h2>
-    <p>Choose a control, then press a letter, number, arrow, Space, or Shift.</p>
+    <p>Choose a control, then press a letter, number, arrow, Space, Tab, or Shift.</p>
     <div className="key-grid">{(Object.keys(keyboardLabels) as (keyof KeyboardBindings)[]).map(action => <button
       key={action} type="button" className={'button' + (pending === action ? ' primary' : '')}
       onClick={() => { setPending(action); setMessage(''); }}
@@ -386,7 +387,7 @@ function KeyboardSettings({ value, change }: { value: Settings; change(settings:
       onKeyDown={event => {
         if (pending !== action) return;
         if (event.code === 'Escape') { setPending(undefined); return; }
-        if (!/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Space|ShiftLeft|ShiftRight)$/.test(event.code)) return;
+        if (!/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Space|Tab|ShiftLeft|ShiftRight)$/.test(event.code)) return;
         event.preventDefault();
         if (Object.entries(keyboard).some(([name, keys]) => name !== action && keys.includes(event.code))) {
           setMessage('That key is already assigned. Choose another key.');
@@ -422,7 +423,7 @@ function SettingsView({ value, change }: { value: Settings; change(settings: Set
       <section className="panel form-panel"><h2>Game settings</h2>
         <Field label="Difficulty"><select value={value.difficulty} onChange={event => change({ ...value, difficulty: event.target.value as Difficulty })}>{difficulties.map(difficulty => <option key={difficulty}>{difficulty}</option>)}</select></Field>
         <Field label="Graphics"><select value={value.quality} onChange={event => change({ ...value, quality: event.target.value as Settings['quality'] })}><option value="auto">Automatic</option><option value="low">Performance</option><option value="high">High quality</option></select></Field>
-        <Field label="Default camera"><select value={value.camera} onChange={event => change({ ...value, camera: event.target.value as Camera })}><option value="broadcast">Broadcast</option><option value="baseline">Baseline</option><option value="courtside">Courtside</option><option value="player">Player lock</option><option value="cinematic">Cinematic</option></select></Field>
+        <Field label="Default camera"><select value={value.camera} onChange={event => change({ ...value, camera: event.target.value as Camera })}><option value="broadcast">Broadcast</option><option value="2k">2K</option><option value="baseline">Baseline</option><option value="courtside">Courtside</option><option value="player">Player lock</option><option value="cinematic">Cinematic</option></select></Field>
         <label className="toggle-line"><input type="checkbox" checked={value.mute ?? false} onChange={event => change({ ...value, mute: event.target.checked })} />Mute court audio</label>
         <label className="toggle-line"><input type="checkbox" checked={value.novelty} onChange={event => change({ ...value, novelty: event.target.checked })} />Enable Bobov Ballerz</label>
       </section>

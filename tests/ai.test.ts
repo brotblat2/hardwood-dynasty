@@ -184,3 +184,49 @@ test('an opening outlet advances a possession through a clear lane', () => {
     }
   }
 });
+
+test('human ballhandler can summon a screen and off-ball human can call for a pass', () => {
+  const s1 = fixture(), c1 = createCoach();
+  s1.players[0].position = { x: 6, z: 0 };
+  s1.players[1].position = { x: 8.5, z: 2.2 };
+  s1.players[2].position = { x: 7, z: -0.2 };
+  const ctrl1 = c1.controls(s1, new Set(['0-0']), { '0-0': { move: { x: 0, z: 0 }, callScreen: true } });
+  assert.ok(ctrl1['0-1'].move.x < 0, 'teammate moves toward screen spot when human calls screen');
+
+  const s2 = fixture(), c2 = createCoach();
+  s2.players[0].position = { x: 4, z: 0 };
+  s2.players[1].position = { x: 8.5, z: 3 };
+  s2.players[2].position = { x: 10, z: -3 };
+  let passed = false;
+  for (let tick = 0; tick < 30; tick++) {
+    s2.tick = tick;
+    const out = c2.controls(s2, new Set(['0-1']), { '0-1': { move: { x: 0, z: 0 }, callPass: true } });
+    if (out['0-0'].pass && out['0-0'].targetId === '0-1') { passed = true; break; }
+  }
+  assert.ok(passed, 'CPU ballhandler passes to off-ball human calling for the ball');
+});
+
+test('defensive schemes switch screens and align into 2-3 zone, while iso clears space', () => {
+  const sw = fixture(), cSw = createCoach();
+  sw.players[0].position = { x: 6, z: 0 };
+  sw.players[1].position = { x: 6.9, z: 1.15 };
+  sw.players[1].pose = 'screen';
+  sw.players[2].position = { x: 7, z: 0.1 };
+  sw.players[3].position = { x: 7.4, z: 1.6 };
+  const switchOut = cSw.controls(sw, new Set(), { '1-0': { move: { x: 0, z: 0 }, defenseScheme: 'switch' } });
+  assert.ok(switchOut['1-1'].move.z < -0.3, 'screener defender switches down toward ballhandler');
+
+  const zone = fixture(), cZone = createCoach();
+  zone.players[0].position = { x: 5, z: 0 };
+  zone.players[2].position = { x: 0, z: 0 };
+  zone.players[3].position = { x: 0, z: 0 };
+  const zOut = cZone.controls(zone, new Set(), { '1-0': { move: { x: 0, z: 0 }, defenseScheme: 'zone23' } });
+  assert.ok(zOut['1-0'].move.x > 0.7 && zOut['1-1'].move.x > 0.7, '2-3 zone defenders move into frontcourt zone anchors');
+
+  const iso = fixture(), cIso = createCoach();
+  iso.players[0].position = { x: 6, z: 2.5 };
+  iso.players[1].position = { x: 7, z: 2.2 };
+  iso.tick = 20;
+  const isoOut = cIso.controls(iso, new Set(), { '0-0': { move: { x: 0, z: 0 }, offensePlay: 'iso' } });
+  assert.ok(isoOut['0-1'].move.z < -0.5, 'iso clears teammate to opposite flank');
+});

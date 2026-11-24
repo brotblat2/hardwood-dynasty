@@ -1,6 +1,6 @@
 import type { Player } from '../contracts/index.ts';
 
-type AppearanceProfile = Player & { weight?: number; appearance?: { skinTone?: string; hairstyle?: string } };
+type AppearanceProfile = Player & { weight?: number; appearance?: { skinTone?: string; hairTone?: string; hairstyle?: string } };
 
 const skinColors = ['#714535', '#955f47', '#b77f60', '#cc9a79', '#d7ab8e', '#9d6b50', '#5e4034'];
 const hairstyles = ['buzz', 'fade', 'curls', 'braids', 'shaved'] as const;
@@ -17,5 +17,7 @@ export function appearanceFor(profile: Player) {
   const skin = tone && /^#[\da-f]{6}$/i.test(tone) ? tone : skinColors[hash % skinColors.length];
   const requestedHair = appearance?.hairstyle;
   const hair = hairstyles.find((style) => style === requestedHair) ?? hairstyles[hash % hairstyles.length];
-  return { stature, thickness, skin, hair, hash };
+  const requestedColor = appearance?.hairTone;
+  const hairColor = requestedColor && /^#[\da-f]{6}$/i.test(requestedColor) ? requestedColor : hash % 17 === 0 ? '#57402d' : '#251d1b';
+  return { stature, thickness, skin, hair, hairColor, hash };
 }

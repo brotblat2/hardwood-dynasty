@@ -34,7 +34,7 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
   const lx = COURT.length / 2;
   const wz = COURT.width / 2;
   ctx.setTransform(canvas.width / length, 0, 0, canvas.height / width, canvas.width / 2, canvas.height / 2);
-  ctx.fillStyle = blacktop ? '#15232c' : '#172724';
+  ctx.fillStyle = blacktop ? '#15232c' : '#152c27';
   ctx.fillRect(-length / 2, -width / 2, length, width);
 
   if (blacktop) {
@@ -58,10 +58,10 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
       let x = -lx;
       while (x < lx) {
         const w = Math.min(row % 2 === 0 && x === -lx ? 0.5 + random() * 1.5 : 1.25 + random() * 3.5, lx - x);
-        const lightness = 66 + random() * 10 + 2.5 * Math.sin(row * 0.43);
-        ctx.fillStyle = `hsl(${33 + random() * 6} ${56 + random() * 9}% ${lightness}%)`;
+        const lightness = 68 + random() * 9 + 2.2 * Math.sin(row * 0.43);
+        ctx.fillStyle = `hsl(${35 + random() * 5} ${53 + random() * 10}% ${lightness}%)`;
         ctx.fillRect(x, z, w, h);
-        ctx.fillStyle = '#51321e24';
+        ctx.fillStyle = '#51321e2b';
         ctx.fillRect(x, z, w, 0.01);
         ctx.fillRect(x, z, 0.012, h);
         for (let i = 0; i < 5; i++) {
@@ -79,15 +79,22 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
       }
     }
     const varnish = ctx.createLinearGradient(-lx, -wz, lx, wz);
-    varnish.addColorStop(0, '#ae6e1922');
-    varnish.addColorStop(0.45, '#fff8b519');
-    varnish.addColorStop(1, '#75441729');
+    varnish.addColorStop(0, '#96612722');
+    varnish.addColorStop(0.45, '#fff6d220');
+    varnish.addColorStop(1, '#75441724');
     ctx.fillStyle = varnish;
     ctx.fillRect(-lx, -wz, COURT.length, COURT.width);
   }
 
-  const ink = blacktop ? '#cbdfd9' : '#f9e9c2';
-  const paint = blacktop ? '#294e50' : '#243d32';
+  const ink = blacktop ? '#cbdfd9' : '#f8eed4';
+  const paint = blacktop ? '#294e50' : '#203f37';
+  if (!blacktop) {
+    ctx.strokeStyle = '#829b77';
+    ctx.lineWidth = 0.025;
+    ctx.strokeRect(-lx - 0.24, -wz - 0.24, COURT.length + 0.48, COURT.width + 0.48);
+    ctx.strokeStyle = '#a08b5d';
+    ctx.strokeRect(-length / 2 + 0.19, -width / 2 + 0.19, length - 0.38, width - 0.38);
+  }
   ctx.strokeStyle = ink;
   ctx.lineWidth = 0.065;
   for (const sign of [-1, 1]) {
@@ -95,8 +102,19 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
     ctx.scale(sign, 1);
     const laneX = lx - 5.79;
     const laneZ = 2.45;
-    ctx.fillStyle = paint;
+    if (blacktop) ctx.fillStyle = paint;
+    else {
+      const lane = ctx.createLinearGradient(laneX, -laneZ, lx, laneZ);
+      lane.addColorStop(0, '#294b40');
+      lane.addColorStop(0.5, '#203f37');
+      lane.addColorStop(1, '#18362d');
+      ctx.fillStyle = lane;
+    }
     ctx.fillRect(laneX, -laneZ, lx - laneX, laneZ * 2);
+    if (!blacktop) {
+      ctx.fillStyle = '#d5ddae0c';
+      for (let z = -laneZ; z < laneZ; z += 0.145) ctx.fillRect(laneX, z, lx - laneX, 0.009);
+    }
     ctx.strokeRect(laneX, -laneZ, lx - laneX, laneZ * 2);
 
     ctx.beginPath();
@@ -171,6 +189,21 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
     ctx.beginPath();
     ctx.rect(-lx, -wz, COURT.length, COURT.width);
     ctx.clip();
+    for (const x of [-11.2, -7.6, -3.8, 0, 3.8, 7.6, 11.2]) {
+      for (const z of [-6.25, 3.8]) {
+        ctx.save();
+        ctx.translate(x, z);
+        ctx.scale(1.55, 0.52);
+        const reflection = ctx.createRadialGradient(0, 0, 0.04, 0, 0, 1.43);
+        reflection.addColorStop(0, '#fff7d774');
+        reflection.addColorStop(0.23, '#fff4d653');
+        reflection.addColorStop(0.58, '#ffeac82d');
+        reflection.addColorStop(1, '#fff4d600');
+        ctx.fillStyle = reflection;
+        ctx.fillRect(-1.45, -1.45, 2.9, 2.9);
+        ctx.restore();
+      }
+    }
     for (const x of [-8.4, 0, 8.4]) {
       ctx.save();
       ctx.translate(x, -4.8);
@@ -182,6 +215,16 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
       ctx.fillStyle = wash;
       ctx.fillRect(-3.2, -3.2, 6.4, 6.4);
       ctx.restore();
+    }
+    for (let i = 0; i < 340; i++) {
+      const x = (random() * 2 - 1) * lx;
+      const z = (random() * 2 - 1) * wz;
+      ctx.strokeStyle = i % 3 === 0 ? '#54382026' : '#faf0d52a';
+      ctx.lineWidth = 0.008 + random() * 0.015;
+      ctx.beginPath();
+      ctx.moveTo(x, z);
+      ctx.quadraticCurveTo(x + random() * 0.075, z + random() * 0.06, x + random() * 0.12, z + random() * 0.10);
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -204,8 +247,10 @@ export function makeCourtTexture(blacktop: boolean, anisotropy: number) {
 }
 
 export function makeCourt() {
-  const material = new THREE.MeshStandardMaterial({
-    roughness: 0.62,
+  const material = new THREE.MeshPhysicalMaterial({
+    roughness: 0.42,
+    clearcoat: 0.46,
+    clearcoatRoughness: 0.31,
     metalness: 0,
     side: THREE.FrontSide,
   });
@@ -239,8 +284,8 @@ export function makeBall(anisotropy: number) {
   ctx.stroke();
 
   const ball = new THREE.Mesh(
-    new THREE.SphereGeometry(0.122, 20, 14),
-    new THREE.MeshStandardMaterial({ map: canvasTexture(canvas, anisotropy), roughness: 0.78 }),
+    new THREE.SphereGeometry(0.122, 28, 18),
+    new THREE.MeshStandardMaterial({ map: canvasTexture(canvas, anisotropy), roughness: 0.67 }),
   );
   ball.castShadow = true;
   return ball;

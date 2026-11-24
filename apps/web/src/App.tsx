@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { Difficulty, GameState, Player, Team } from '../../../packages/contracts/index.ts';
 import { demoTeams, bobovTeam, parseRosterCsv, validateRoster } from '../../../packages/roster-data/index.ts';
@@ -6,10 +6,10 @@ import type { RosterPack } from '../../../packages/roster-data/index.ts';
 import { DEFAULT_KEYBOARD_BINDINGS } from '../../../packages/controls/index.tsx';
 import type { KeyboardBindings } from '../../../packages/controls/index.tsx';
 import { createEngine } from '../../../packages/game-engine/index.ts';
-import { createRenderer } from '../../../packages/rendering/index.ts';
-import { Match } from './Match.tsx';
 import type { MatchSetup, Camera } from './Match.tsx';
 import { CareerHub, FranchiseHub } from './Management.tsx';
+
+const Match = lazy(() => import('./Match.tsx').then(module => ({ default: module.Match })));
 
 type Page = 'home' | 'play' | 'franchise' | 'career' | 'online' | 'blacktop' | 'practice' | 'rosters' | 'settings';
 type Settings = { difficulty: Difficulty; quality: 'auto' | 'low' | 'high'; camera: Camera; novelty: boolean; server: string; keyboard?: KeyboardBindings; mute?: boolean };
@@ -54,22 +54,31 @@ type MatchLaunch = {
 function CourtPreview() {
   const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!element.current) return;
-    const previewEngine = createEngine([demoTeams[0], demoTeams[1]], { mode: 'regulation' });
-    let renderer: ReturnType<typeof createRenderer> | undefined;
-    try {
-      renderer = createRenderer(element.current, { camera: 'courtside', quality: 'low' });
-      renderer.draw(previewEngine.state);
-    } catch { return; }
-    const observer = new ResizeObserver(() => renderer?.draw(previewEngine.state));
-    observer.observe(element.current);
-    return () => { observer.disconnect(); renderer?.dispose(); };
+    const target = element.current;
+    if (!target) return;
+    let cleanup = () => {};
+    let active = true;
+    void import('../../../packages/rendering/index.ts').then(({ createRenderer }) => {
+      if (!active) return;
+      const preview = createEngine([demoTeams[0], demoTeams[1]], { mode: 'regulation' });
+      const renderer = createRenderer(target, { camera: 'courtside', quality: 'low' });
+      renderer.draw(preview.state);
+      const observer = new ResizeObserver(() => renderer.draw(preview.state));
+      observer.observe(target);
+      cleanup = () => { observer.disconnect(); renderer.dispose(); };
+    }).catch(() => undefined);
+    return () => { active = false; cleanup(); };
   }, []);
   return <div className="hero-preview" ref={element} aria-hidden="true" />;
 }
 
 function Basketball({ className }: { className?: string }) {
   return <span className={'basketball ' + (className ?? '')} aria-hidden="true"><i /><b /><em /></span>;
+}
+
+function isBundledNbaRoster(pack?: RosterPack) {
+  return pack?.source === 'ESPN player bios · BoxScore Lab season data' ||
+    pack?.source.startsWith('ESPN public NBA roster JSON (') === true;
 }
 
 export function App() {
@@ -81,14 +90,14 @@ export function App() {
   const [suspended, setSuspended] = useState<GameState | undefined>(() => readLocal('match'));
   useEffect(() => {
     const existing = readLocal<RosterPack>('rosters');
-    if (readLocal<boolean>('fictional') || (existing && !existing.source.startsWith('ESPN'))) return;
+    if (readLocal<boolean>('fictional') || (existing && !isBundledNbaRoster(existing))) return;
     let mounted = true;
     void import('../../../packages/roster-data/nba.ts').then(module => {
       if (existing?.modelVersion === module.NBA_MODEL_VERSION) return;
       return module.loadNbaRosters().then(pack => {
         if (!mounted || readLocal<boolean>('fictional')) return;
         const stored = readLocal<RosterPack>('rosters');
-        if (stored && !stored.source.startsWith('ESPN')) return;
+        if (stored && !isBundledNbaRoster(stored)) return;
         setRoster(pack);
         writeLocal('rosters', pack);
       });
@@ -111,9 +120,9 @@ export function App() {
     writeLocal('fictional', !pack);
   };
   if (match) {
-    return <Match setup={match.setup} camera={settings.camera} quality={settings.quality} bindings={settings.keyboard} mute={settings.mute}
+    return <Suspense fallback={<main className="match loading-court" role="status">Opening the court…</main>}><Match setup={match.setup} camera={settings.camera} quality={settings.quality} bindings={settings.keyboard} mute={settings.mute}
       onExit={() => { setMatch(null); setPage(match.origin); setSuspended(readLocal('match')); }} onResult={match.onResult}
-      onSnapshot={match.save ? state => writeLocal('match', state.phase === 'final' ? undefined : state) : undefined} />;
+      onSnapshot={match.save ? state => writeLocal('match', state.phase === 'final' ? undefined : state) : undefined} /></Suspense>;
   }
   return <div className="app-shell">
     <header className="app-header">

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { COURT } from '../contracts/index.ts';
+import type { GameState } from '../contracts/index.ts';
+import { netResponse } from './equipment.ts';
 import { canvasTexture, seededRandom } from './court.ts';
 import { mergeStaticMeshes } from './geometry.ts';
 
@@ -12,6 +14,7 @@ function box(parent: THREE.Object3D, material: THREE.Material, size: [number, nu
 
 export function makeHoops() {
   const result = new THREE.Group();
+  const nets: { side: number; data: THREE.BufferAttribute; rest: Float32Array; needsReset: boolean }[] = [];
   const paint = new THREE.MeshStandardMaterial({ color: 0x172629, roughness: 0.62, metalness: 0.26 });
   const padding = new THREE.MeshStandardMaterial({ color: 0x284837, roughness: 0.86 });
   const gray = new THREE.MeshStandardMaterial({ color: 0x93a5a4, roughness: 0.34, metalness: 0.63 });
@@ -19,7 +22,7 @@ export function makeHoops() {
   const glass = new THREE.MeshPhysicalMaterial({
     color: 0xb3cacc, opacity: 0.23, transparent: true, depthWrite: false, roughness: 0.25, metalness: 0.03,
   });
-  const rimMaterial = new THREE.MeshStandardMaterial({ color: 0xd85325, metalness: 0.4, roughness: 0.4 });
+  const rimMaterial = new THREE.MeshStandardMaterial({ color: 0xe55726, metalness: 0.27, roughness: 0.35 });
   for (const sign of [-1, 1]) {
     const rimX = sign * COURT.rimX;
     const h = COURT.rimHeight;
@@ -27,9 +30,13 @@ export function makeHoops() {
     const baseX = sign * 15.76;
 
     box(result, paint, [1.06, 0.16, 1.27], baseX, 0.12, 0);
-    box(result, padding, [0.55, 2.18, 0.68], baseX, 1.18, 0);
+    box(result, padding, [0.55, 2.18, 0.68], baseX, 1.18, 0).castShadow = true;
     box(result, gray, [0.18, 1.34, 0.18], baseX, 2.79, 0);
-    box(result, gray, [Math.abs(baseX - boardX), 0.16, 0.17], (boardX + baseX) / 2, 3.36, 0);
+    box(result, gray, [Math.abs(baseX - boardX), 0.16, 0.17], (boardX + baseX) / 2, 3.36, 0).castShadow = true;
+    const brace = box(result, gray, [1.81, 0.1, 0.12], baseX - sign * 0.76, 3.13, 0);
+    brace.rotation.z = -sign * 0.35;
+    const clock = box(result, paint, [0.16, 0.40, 0.55], boardX + sign * 0.09, h + 1.20, 0);
+    clock.castShadow = true;
     box(result, padding, [0.12, 0.075, 1.9], boardX, h - 0.075, 0);
     const board = box(result, glass, [0.055, 1.055, 1.82], boardX, h + 0.46, 0);
     board.renderOrder = 1;
@@ -65,11 +72,35 @@ export function makeHoops() {
       }
     }
     const net = new THREE.BufferGeometry();
-    net.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
+    const rest = new Float32Array(coords);
+    const data = new THREE.BufferAttribute(rest.slice(), 3);
+    data.setUsage(THREE.DynamicDrawUsage);
+    net.setAttribute('position', data);
+    nets.push({ side: sign, data, rest, needsReset: false });
     result.add(new THREE.LineSegments(net, new THREE.LineBasicMaterial({ color: 0xf4eddc, transparent: true, opacity: 0.83 })));
   }
   mergeStaticMeshes(result, true);
-  return result;
+  return {
+    group: result,
+    animate(state: GameState) {
+      for (const net of nets) {
+        const movement = netResponse(state, net.side);
+        if (!movement.drop && !movement.flare && !movement.x && !movement.z && !net.needsReset) continue;
+        net.needsReset = Boolean(movement.drop || movement.flare || movement.x || movement.z);
+        const rimX = net.side * COURT.rimX;
+        for (let i = 0; i < net.rest.length; i += 3) {
+          const x = net.rest[i];
+          const y = net.rest[i + 1];
+          const z = net.rest[i + 2];
+          const root = (COURT.rimHeight - y) / 0.43;
+          const stretch = 1 + movement.flare * root / 0.21;
+          net.data.setXYZ(i / 3, rimX + (x - rimX) * stretch + movement.x * root * root,
+            y - movement.drop * root, z * stretch + movement.z * root * root);
+        }
+        net.data.needsUpdate = true;
+      }
+    },
+  };
 }
 
 function makeLEDTexture() {
@@ -77,9 +108,9 @@ function makeLEDTexture() {
   canvas.width = 2048;
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#102521';
+  ctx.fillStyle = '#112e29';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#84a48e';
+  ctx.fillStyle = '#b7c9a5';
   ctx.font = '800 26px sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
@@ -88,7 +119,7 @@ function makeLEDTexture() {
     ctx.fillText(i % 2 ? 'HARDWOOD  DYNASTY' : 'HARDWOOD  ARENA', center, 34);
     ctx.fillStyle = '#bdab6b';
     ctx.fillRect(center + 202, 25, 2, 17);
-    ctx.fillStyle = '#84a48e';
+    ctx.fillStyle = '#b7c9a5';
   }
   ctx.fillStyle = '#d8f5d221';
   for (let i = 0; i < canvas.height; i += 2) ctx.fillRect(0, i, canvas.width, 1);
@@ -188,8 +219,24 @@ export function makeArena() {
 
   const arenaWall = new THREE.MeshStandardMaterial({ color: 0x141e1d, roughness: 0.93 });
   box(indoor, arenaWall, [45, 9, 0.5], 0, 4.5, -17.15);
-  const upperEdge = new THREE.MeshBasicMaterial({ color: 0x435651 });
-  box(indoor, upperEdge, [44.7, 0.038, 0.1], 0, 5.18, -16.88);
+  const upperEdge = new THREE.MeshBasicMaterial({ color: 0x7b8c73 });
+  box(indoor, upperEdge, [44.7, 0.040, 0.1], 0, 5.18, -16.88);
+  const concourse = new THREE.MeshStandardMaterial({ color: 0x29342f, roughness: 0.91 });
+  const beam = new THREE.MeshStandardMaterial({ color: 0x394842, roughness: 0.67, metalness: 0.48 });
+  const light = new THREE.MeshBasicMaterial({ color: 0xf1eed7 });
+  box(indoor, concourse, [45, 0.63, 1.2], 0, 4.86, -16.96);
+  box(indoor, beam, [45, 0.10, 0.13], 0, 5.34, -16.57);
+  for (const x of [-15.2, -9.15, -3.05, 3.05, 9.15, 15.2]) {
+    box(indoor, beam, [0.12, 9.1, 0.23], x, 4.80, -17.18);
+    box(indoor, concourse, [3.53, 0.21, 0.48], x, 7.35, -16.65);
+    for (const offset of [-1.19, -0.4, 0.4, 1.19]) box(indoor, light, [0.58, 0.09, 0.055], x + offset, 7.34, -16.40);
+    box(indoor, light, [0.96, 0.033, 0.033], x, 5.15, -16.47);
+  }
+  for (const x of [-11.7, -5.95, 0, 5.95, 11.7]) {
+    box(indoor, concourse, [0.67, 0.14, 0.58], x, 0.14, -9.56);
+    box(indoor, beam, [0.045, 1.16, 0.045], x - 0.3, 0.65, -9.68);
+    box(indoor, beam, [0.045, 1.16, 0.045], x + 0.3, 0.65, -9.68);
+  }
   const led = new THREE.MeshBasicMaterial({ map: makeLEDTexture() });
   box(indoor, stage, [28.8, 0.78, 0.48], 0, 0.43, -9.23);
   const ledBoard = new THREE.Mesh(new THREE.PlaneGeometry(28.6, 0.6), led);

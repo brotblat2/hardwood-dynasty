@@ -1,9 +1,12 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { COURT, TICK_RATE } from '../contracts/index.ts';
-import type { GamePlayer, GameState } from '../contracts/index.ts';
+import type { GameEvent, GamePlayer, GameState, Vec3 } from '../contracts/index.ts';
 import { makeCourtTexture, seededRandom } from './court.ts';
 import { courtMovement } from './input-view.ts';
 import { appearanceFor } from './appearance.ts';
+import { makeGameCamera } from './camera.ts';
+import { makeMotion, motionEvents } from './motion.ts';
+import { netResponse } from './equipment.ts';
 import type { Camera, GameRenderer, RendererOptions } from './index.ts';
 
 type Point = { x: number; y: number; depth: number };
@@ -26,6 +29,11 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
   const floorTextures = new Map<boolean, ReturnType<typeof makeCourtTexture>>();
   const camera = new PerspectiveCamera(39, 1, 0.12, 120);
   const vector = new Vector3();
+  const placeCamera = makeGameCamera(camera);
+  const actors = new Map<string, { appearance: ReturnType<typeof appearanceFor>; motion: ReturnType<typeof makeMotion> }>();
+  let lastFrame = 0;
+  let lastBallTick = -1;
+  let ballRoll = 0;
   let view: Camera = options.camera ?? 'broadcast';
   let quality = options.quality ?? 'high';
   let stateKey = '';
@@ -36,7 +44,7 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     return { x: (vector.x + 1) * canvas.width / 2, y: (1 - vector.y) * canvas.height / 2, depth: vector.z };
   }
 
-  function shape(target: CanvasRenderingContext2D, color: string, ...points: Point[]) {
+  function shape(target: CanvasRenderingContext2D, color: string | CanvasGradient, ...points: Point[]) {
     if (points.some((point) => point.depth < -1 || point.depth > 1)) return;
     target.beginPath();
     target.moveTo(points[0].x, points[0].y);
@@ -58,7 +66,7 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     target.stroke();
   }
 
-  function disc(target: CanvasRenderingContext2D, center: Point, x: number, y: number, color: string, stroke?: string) {
+  function disc(target: CanvasRenderingContext2D, center: Point, x: number, y: number, color: string | CanvasGradient, stroke?: string) {
     if (center.depth < -1 || center.depth > 1) return;
     target.beginPath();
     target.ellipse(center.x, center.y, x, y, 0, 0, Math.PI * 2);
@@ -71,41 +79,10 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     }
   }
 
-  function fitCamera(state: GameState, selectedId?: string) {
-    const half = state.config.halfCourt === true;
-    const focus = half ? 7.1 : 0;
-    const zoom = Math.max(1, 1.63 / camera.aspect);
-    const ball = state.ball.position;
-    if (view === 'baseline') {
-      camera.fov = 43;
-      camera.position.set(focus + 25.5 * zoom, 16 * zoom, 15.5 * zoom);
-    } else if (view === 'courtside') {
-      camera.fov = 48;
-      camera.position.set(focus + 1.6, 8.2 * zoom, 20 * zoom);
-    } else if (view === 'player') {
-      const carrier = state.players.find((player) => player.id === selectedId)?.position ?? ball;
-      const follow = Math.round(carrier.x * 2) / 2;
-      camera.fov = 52;
-      camera.position.set(follow - 4.0, 6.1 * zoom, 13.8 * zoom);
-      camera.lookAt(follow, 0.8, 0);
-      camera.updateProjectionMatrix();
-      camera.updateMatrixWorld();
-      return;
-    } else if (view === 'cinematic') {
-      camera.fov = 42;
-      camera.position.set(focus + 9.4 * zoom, 11.5 * zoom, 22.4 * zoom);
-    } else {
-      camera.fov = 39;
-      const spread = half ? Math.max(0.91, zoom * 0.78) : zoom;
-      camera.position.set(focus, 21.8 * spread, 24.8 * spread);
-    }
-    camera.lookAt(focus, 0.25, -0.12);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
-  }
-
   function paintTriangle(target: CanvasRenderingContext2D, image: HTMLCanvasElement, p: Point, q: Point, r: Point, a: SourcePoint, b: SourcePoint, c: SourcePoint) {
     if ([p, q, r].some(({ depth }) => depth < -1 || depth > 1)) return;
+    if (Math.max(p.x, q.x, r.x) < 0 || Math.min(p.x, q.x, r.x) > canvas.width ||
+        Math.max(p.y, q.y, r.y) < 0 || Math.min(p.y, q.y, r.y) > canvas.height) return;
     const ux = b.x - a.x;
     const uy = b.y - a.y;
     const vx = c.x - a.x;
@@ -129,8 +106,89 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     target.closePath();
     target.clip();
     target.transform(xx, xy, yx, yy, p.x - xx * a.x - yx * a.y, p.y - xy * a.x - yy * a.y);
-    target.drawImage(image, 0, 0);
+    const left = Math.floor(Math.min(a.x, b.x, c.x));
+    const top = Math.floor(Math.min(a.y, b.y, c.y));
+    const width = Math.ceil(Math.max(a.x, b.x, c.x)) - left;
+    const height = Math.ceil(Math.max(a.y, b.y, c.y)) - top;
+    target.drawImage(image, left, top, width, height, left, top, width, height);
     target.restore();
+  }
+
+  let spectatorRows: HTMLCanvasElement[] | undefined;
+
+  function crowdRows() {
+    if (spectatorRows) return spectatorRows;
+    const random = seededRandom(1802);
+    spectatorRows = [];
+    for (let row = 0; row < 11; row++) {
+      const strip = document.createElement('canvas');
+      strip.width = 1840;
+      strip.height = 77;
+      const art = strip.getContext('2d')!;
+      const rowLight = art.createLinearGradient(0, 0, 0, strip.height);
+      rowLight.addColorStop(0, '#222b2821');
+      rowLight.addColorStop(0.43, '#2d3934');
+      rowLight.addColorStop(1, '#1c2824');
+      art.fillStyle = rowLight;
+      art.fillRect(0, 30, strip.width, 47);
+      art.fillStyle = '#70827567';
+      art.fillRect(0, 63, strip.width, 1);
+      art.fillStyle = '#121a17';
+      art.fillRect(0, 72, strip.width, 5);
+      for (let i = 0; i < 79; i++) {
+        const x = 12 + i * 23.4 + (random() - 0.5) * 7;
+        if (i % 14 === 0 || i % 14 === 1) {
+          art.fillStyle = '#59645a';
+          art.fillRect(x - 8, 59, 15, 2);
+          continue;
+        }
+        art.fillStyle = '#16221f';
+        art.fillRect(x - 7, 38, 15, 26);
+        if (random() < 0.16) continue;
+        const y = 13 + random() * 11;
+        const broad = 7.1 + random() * 4.2;
+        const tone = skinTones[Math.floor(random() * skinTones.length)];
+        const top = spectatorTops[Math.floor(random() * spectatorTops.length)];
+        art.fillStyle = top;
+        art.beginPath();
+        art.moveTo(x - 4, y + 15);
+        art.quadraticCurveTo(x - broad, y + 16, x - broad - 2.5, y + 27);
+        art.lineTo(x - broad - 1, y + 47);
+        art.lineTo(x + broad + 1, y + 47);
+        art.quadraticCurveTo(x + broad + 3, y + 18, x + 3, y + 15);
+        art.fill();
+        art.fillStyle = '#10171449';
+        art.fillRect(x + 2, y + 22, 2 + broad * 0.28, 25);
+        art.fillStyle = tone;
+        art.fillRect(x - 2.8, y + 11, 5.6, 8);
+        art.beginPath();
+        art.ellipse(x, y + 7, 5.7 + random() * 1.1, 8.1, 0, 0, Math.PI * 2);
+        art.fill();
+        art.fillStyle = '#2d2825';
+        art.beginPath();
+        art.ellipse(x, y + 2, 6 + random() * 0.9, 3.25 + random() * 1.2, 0, Math.PI, Math.PI * 2);
+        art.fill();
+        if (i % 5 === 2) {
+          art.fillStyle = '#d9cdb063';
+          art.fillRect(x - 4, y + 22, 8, 1.5);
+        }
+      }
+      spectatorRows.push(strip);
+    }
+    return spectatorRows;
+  }
+
+  function paintPanel(target: CanvasRenderingContext2D, image: HTMLCanvasElement, left: number, right: number, low: number, high: number, z: number) {
+    const a = project(left, high, z);
+    const b = project(right, high, z);
+    const c = project(left, low, z);
+    const d = project(right, low, z);
+    const topLeft = { x: 0, y: 0 };
+    const topRight = { x: image.width, y: 0 };
+    const bottomLeft = { x: 0, y: image.height };
+    const bottomRight = { x: image.width, y: image.height };
+    paintTriangle(target, image, a, b, c, topLeft, topRight, bottomLeft);
+    paintTriangle(target, image, b, d, c, topRight, bottomRight, bottomLeft);
   }
 
   function paintArena(blacktop: boolean) {
@@ -158,38 +216,35 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       wall.addColorStop(1, '#313a33');
       target.fillStyle = wall;
       target.fillRect(0, 0, canvas.width, canvas.height * 0.34);
-      for (const y of [4.9, 5.14]) {
-        line(target, '#8d9b733d', 1.7, project(-23, y, -16), project(23, y, -16));
-      }
-      for (let row = 9; row >= 0; row--) {
-        const y = row * 0.43;
-        const z = -9.65 - row * 0.65;
-        shape(target, row % 2 === 0 ? '#273632' : '#202d2a', project(-17, y - 0.42, z), project(-17, y + 0.12, z), project(17, y + 0.12, z), project(17, y - 0.42, z));
-        for (let x = -16.4; x <= 16.4; x += 0.47) {
-          if (random() < 0.23 || Math.abs(x - Math.round(x / 6.5) * 6.5) < 0.34) continue;
-          const headY = y + 0.56 + random() * 0.13;
-          const head = project(x, headY, z);
-          const shoulder = project(x, headY - 0.27, z);
-          const unit = Math.max(0.85, Math.abs(head.y - shoulder.y) * 0.41);
-          const top = spectatorTops[Math.floor(random() * spectatorTops.length)];
-          const shift = 0.13 * Math.sin(x * 3 + row * 0.73);
-          const shoulderLeft = project(x - 0.11, headY - 0.22 + shift * 0.4, z);
-          const shoulderRight = project(x + 0.11, headY - 0.22 - shift * 0.4, z);
-          line(target, top, unit * 1.8, shoulderLeft, shoulder, shoulderRight);
-          disc(target, shoulder, 1.24 * unit, 1.41 * unit, top);
-          disc(target, head, unit * 0.67, unit * 0.78, skinTones[Math.floor(random() * skinTones.length)]);
+      shape(target, '#26352e', project(-29, 0, -18), project(-29, 9.8, -18), project(29, 9.8, -18), project(29, 0, -18));
+      line(target, '#4b5d50', 3.15, project(-29, 5.72, -17.86), project(29, 5.72, -17.86));
+      line(target, '#7d8d715f', 1.3, project(-29, 5.82, -17.84), project(29, 5.82, -17.84));
+      line(target, '#121f1b', 5.25, project(-29, 8.0, -17.55), project(29, 8.0, -17.55));
+      for (const x of [-22, -16.5, -11, -5.5, 0, 5.5, 11, 16.5, 22]) {
+        line(target, '#52635657', 1.6, project(x, 5.78, -17.83), project(x, 10.2, -17.83));
+        line(target, '#456156', 4.1, project(x - 1.52, 7.55, -17.64), project(x + 1.52, 7.55, -17.64));
+        for (const offset of [-1.07, -0.36, 0.36, 1.07]) {
+          line(target, '#eae8cce3', 1.6, project(x + offset - 0.22, 7.55, -17.6), project(x + offset + 0.22, 7.55, -17.6));
         }
+      }
+      const rows = crowdRows();
+      for (let row = rows.length - 1; row >= 0; row--) {
+        const y = row * 0.43 + (row >= 6 ? 0.3 : 0);
+        const z = -9.56 - row * 0.64 - (row >= 6 ? 0.40 : 0);
+        paintPanel(target, rows[row], -21.0, 21.0, y - 0.24, y + 0.79, z);
+        if (row === 5 || row === 9) line(target, '#778b7f83', 0.94, project(-21, y + 0.4, z + 0.18), project(21, y + 0.4, z + 0.18));
       }
       const left = project(-14.9, 0.2, -9.03);
       const right = project(14.9, 0.2, -9.03);
-      shape(target, '#181f1b', left, project(-14.9, 0.86, -9.03), project(14.9, 0.86, -9.03), right);
+      shape(target, '#102923', left, project(-14.9, 0.86, -9.03), project(14.9, 0.86, -9.03), right);
+      line(target, '#233c2e', 4.0, project(-14.9, 0.22, -9.025), project(14.9, 0.22, -9.025));
       line(target, '#709785', 1.2, project(-14.9, 0.83, -9.025), project(14.9, 0.83, -9.025));
-      target.fillStyle = '#9dab86';
+      target.fillStyle = '#b8c7aa';
       target.font = `bold ${Math.max(8, canvas.height * 0.013)}px sans-serif`;
       target.textAlign = 'center';
       for (const x of [-10.5, -3.5, 3.5, 10.5]) {
         const label = project(x, 0.46, -9.02);
-        target.fillText('HARDWOOD DYNASTY', label.x, label.y);
+        if (label.depth >= -1 && label.depth <= 1) target.fillText('HARDWOOD DYNASTY', label.x, label.y);
       }
     }
     if (!floorTextures.has(blacktop)) floorTextures.set(blacktop, makeCourtTexture(blacktop, 1));
@@ -214,136 +269,259 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     }
   }
 
-  function paintHoop(target: CanvasRenderingContext2D, side: number, ratio: number) {
+  function paintHoop(target: CanvasRenderingContext2D, side: number, ratio: number, state: GameState) {
     const rimX = side * COURT.rimX;
     const board = rimX + side * 0.39;
     const pole = side * 15.76;
     const h = COURT.rimHeight;
     const weight = Math.max(1.1, Math.abs(project(pole, 0, 0).y - project(pole, 2.2, 0).y) / 21);
     line(target, '#1b2623', weight * 2.5, project(pole, 0.04, -0.38), project(pole, 0.04, 0.38));
-    line(target, '#849894', weight, project(pole, 1.62, 0), project(pole, h + 0.32, 0), project(board, h + 0.32, 0));
-    line(target, '#2b5245', weight * 2.5, project(pole, 0.075, 0), project(pole, 2.09, 0));
+    line(target, '#2b3c37', weight * 1.57, project(pole, 1.62, 0), project(pole, h + 0.32, 0), project(board, h + 0.32, 0));
+    line(target, '#9daaa1', weight, project(pole, 1.62, 0), project(pole, h + 0.32, 0), project(board, h + 0.32, 0));
+    line(target, '#71817c', weight * 0.78, project(pole, h - 0.22, 0), project(pole - side * 1.55, h + 0.29, 0));
+    line(target, '#213d37', weight * 3.1, project(pole, 0.075, 0), project(pole, 2.09, 0));
+    line(target, '#426556', weight * 1.28, project(pole, 0.16, -0.09), project(pole, 2.02, -0.09));
     const corners = [project(board, h - 0.07, -0.9), project(board, h + 0.98, -0.9), project(board, h + 0.98, 0.9), project(board, h - 0.07, 0.9)];
-    shape(target, '#9ab5a646', ...corners);
+    shape(target, '#a6c0b34c', ...corners);
+    shape(target, '#e6f7ef40', corners[1], corners[2], project(board, h + 0.63, 0.72), project(board, h + 0.86, -0.9));
     line(target, '#e3e4cc', ratio * 1.15, ...corners, corners[0]);
     const rectangle = [project(board, h + 0.035, -0.279), project(board, h + 0.48, -0.279), project(board, h + 0.48, 0.279), project(board, h + 0.035, 0.279)];
     line(target, '#e7dfc5', ratio * 0.85, ...rectangle, rectangle[0]);
     line(target, '#bd4f2e', weight * 0.75, project(board, h, 0), project(rimX + side * 0.22, h, 0));
+    const impact = netResponse(state, side);
     const rim: Point[] = [];
-    for (let i = 0; i <= 16; i++) {
-      const angle = i / 16 * Math.PI * 2;
+    const rows = 5;
+    const columns = 12;
+    for (let i = 0; i <= 24; i++) {
+      const angle = i / 24 * Math.PI * 2;
       rim.push(project(rimX + 0.235 * Math.cos(angle), h, 0.235 * Math.sin(angle)));
-      if (i % 2 === 0) {
-        for (const turn of [-0.33, 0.33]) {
-          const middle = project(rimX + 0.173 * Math.cos(angle + turn), h - 0.27, 0.173 * Math.sin(angle + turn));
-          line(target, '#f6edd0ac', ratio * 0.63, rim[i], middle, project(rimX + 0.125 * Math.cos(angle), h - 0.43, 0.125 * Math.sin(angle)));
+    }
+    const cord = (row: number, column: number) => {
+      const fade = row / rows;
+      const angle = column / columns * Math.PI * 2;
+      const radius = 0.221 - fade * 0.088 + impact.flare * fade;
+      return project(rimX + radius * Math.cos(angle) + impact.x * fade * fade, h - fade * (0.43 + impact.drop),
+        radius * Math.sin(angle) + impact.z * fade * fade);
+    };
+    for (let row = 0; row < rows; row++) {
+      for (let i = 0; i < columns; i++) {
+        for (const offset of [-0.5, 0.5]) {
+          line(target, row % 2 ? '#f9f1d999' : '#fff4e2c6', ratio * 0.68,
+            cord(row, i + row * 0.5), cord(row + 1, i + row * 0.5 + offset));
         }
       }
     }
-    line(target, '#eb6440', ratio * 1.25, ...rim);
+    line(target, '#5c2a1b', ratio * 1.65, ...rim);
+    line(target, '#ed713e', ratio * 1.1, ...rim);
   }
 
-  function paintPlayer(target: CanvasRenderingContext2D, player: GamePlayer, state: GameState, selected: boolean, ratio: number) {
+  const palette = new Map<string, [string, string, string]>();
+  function colors(color: string): [string, string, string] {
+    const cached = palette.get(color);
+    if (cached) return cached;
+    const rgb = Number.parseInt(color.slice(1), 16);
+    const channel = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+    const tint = (scale: number, warm: number) => `rgb(${channel((rgb >> 16) * scale + warm)},${channel((rgb >> 8 & 255) * scale + warm * 0.91)},${channel((rgb & 255) * scale + warm * 0.74)})`;
+    const result: [string, string, string] = [tint(1.15, 11), color, tint(0.61, 3)];
+    palette.set(color, result);
+    return result;
+  }
+
+  function lit(target: CanvasRenderingContext2D, color: string, a: Point, b: Point): string | CanvasGradient {
+    if (Math.hypot(a.x - b.x, a.y - b.y) < 0.08) return color;
+    const [highlight, base, shadow] = colors(color);
+    const gradient = target.createLinearGradient(a.x, a.y, b.x, b.y);
+    gradient.addColorStop(0, shadow);
+    gradient.addColorStop(0.38, highlight);
+    gradient.addColorStop(0.71, base);
+    gradient.addColorStop(1, shadow);
+    return gradient;
+  }
+
+  function tapered(target: CanvasRenderingContext2D, color: string, a: Point, b: Point, start: number, middle: number, end: number) {
+    if (a.depth < -1 || a.depth > 1 || b.depth < -1 || b.depth > 1) return;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < 0.07) return;
+    const dx = (b.y - a.y) / length;
+    const dy = (a.x - b.x) / length;
+    const cx = a.x + (b.x - a.x) * 0.42;
+    const cy = a.y + (b.y - a.y) * 0.42;
+    target.beginPath();
+    target.moveTo(a.x + dx * start, a.y + dy * start);
+    target.quadraticCurveTo(cx + dx * middle, cy + dy * middle, b.x + dx * end, b.y + dy * end);
+    target.quadraticCurveTo(b.x + (b.x - a.x) * 0.19, b.y + (b.y - a.y) * 0.19, b.x - dx * end, b.y - dy * end);
+    target.quadraticCurveTo(cx - dx * middle, cy - dy * middle, a.x - dx * start, a.y - dy * start);
+    target.quadraticCurveTo(a.x - (b.x - a.x) * 0.19, a.y - (b.y - a.y) * 0.19, a.x + dx * start, a.y + dy * start);
+    target.closePath();
+    target.fillStyle = lit(target, color, { ...a, x: cx - dx * middle, y: cy - dy * middle }, { ...b, x: cx + dx * middle, y: cy + dy * middle });
+    target.fill();
+  }
+
+  function paintActor(target: CanvasRenderingContext2D, player: GamePlayer, state: GameState, selected: boolean, ratio: number, event: GameEvent | undefined) {
+    let actor = actors.get(player.id);
+    if (!actor) {
+      const appearance = appearanceFor(player.profile);
+      actor = { appearance, motion: makeMotion(appearance.stature, appearance.thickness, appearance.hash) };
+      actors.set(player.id, actor);
+    }
     const { x, z } = player.position;
     const ground = project(x, 0, z);
-    const head = project(x, 2, z);
-    if (ground.depth > 1 || ground.depth < -1 || ground.x < -120 || ground.x > canvas.width + 120) return;
-    const size = Math.max(8, Math.hypot(head.x - ground.x, head.y - ground.y));
-    const { stature, thickness, skin, hair: hairstyle, hash } = appearanceFor(player.profile);
-    const width = Math.max(1.6, size / 12) * thickness;
-    const headWidth = width / thickness;
-    const scale = stature / 2.02;
-    const facing = player.facing;
-    const fx = Math.cos(facing);
-    const fz = Math.sin(facing);
-    const team = state.teams[player.side];
-    const jersey = player.side === 0 ? team.color : '#eee9d7';
-    const strip = player.side === 0 ? team.accent : team.color;
-    const speed = Math.min(1, Math.hypot(player.velocity.x, player.velocity.z) / 5.5);
-    const cycle = state.tick / TICK_RATE * (12 + speed * 5) + player.profile.number * 0.48;
+    const { stature, thickness, skin, hair: hairstyle, hairColor, hash } = actor.appearance;
     const charge = state.charge[player.id] ?? 0;
-    const raising = player.pose === 'shoot' || player.pose === 'contest' || charge > 0;
-    const screen = player.pose === 'screen';
-    const bounce = speed * (0.025 * Math.sin(2 * cycle) - 0.045) + (raising && charge <= 0 ? 0.1 : 0);
-    const at = (side: number, y: number, forward: number) => project(x + scale * (-side * thickness * fz + forward * fx), scale * (y + bounce), z + scale * (side * thickness * fx + forward * fz));
-
-    const baseWidth = Math.max(ratio * 5, size * 0.19);
-    disc(target, ground, baseWidth * 1.16, baseWidth * 0.45, '#14150c50');
+    const heldBall = state.ball.ownerId === player.id ? state.ball.position : undefined;
+    const pose = actor.motion(player, state.tick, heldBall, charge, event);
+    const head = project(x, stature + pose.rise, z);
+    if (ground.depth > 1 || ground.depth < -1 || ground.x < -140 || ground.x > canvas.width + 140 || ground.y < -140 || head.y > canvas.height + 140) return;
+    const size = Math.max(8, Math.hypot(head.x - ground.x, head.y - ground.y));
+    const unit = size / (2.02 + pose.rise);
+    const scale = stature / 2.02;
+    const fx = Math.cos(pose.facing);
+    const fz = Math.sin(pose.facing);
+    const team = state.teams[player.side];
+    const jersey = player.side === 0 ? team.color : '#ede9dd';
+    const strip = player.side === 0 ? team.accent : team.color;
+    const shorts = player.side === 0 ? jersey : '#e3ddd1';
+    const boot = hash % 3 === 1 ? '#353739' : '#e5e5da';
+    const sole = hash % 3 === 1 ? '#a4aba3' : '#414745';
+    const socks = hash % 7 === 0 ? strip : '#e5e4d9';
+    const at = (side: number, y: number, forward: number) => project(x + scale * (side * fz + forward * fx),
+      scale * (y + pose.rise), z + scale * (-side * fx + forward * fz));
+    const joint = ({ x, y, z }: Vec3) => at(x, y, z);
+    const upper = (side: number, y: number, forward: number) => at(side * thickness - (y - 1.29) * pose.roll, y - pose.crouch,
+      forward + (y - 1.29) * pose.tilt - side * pose.twist);
+    const towardCamera = (camera.position.x - x) * fx + (camera.position.z - z) * fz;
+    const acrossCamera = (camera.position.x - x) * fz - (camera.position.z - z) * fx;
+    const showFront = towardCamera >= 0 ? 1 : -1;
+    const detail = size > 44 * ratio;
+    const surface = project(x - 0.10 - pose.rise * 0.37, 0.018, z + 0.04);
+    const shadowWidth = Math.max(3 * ratio, size * (0.23 + pose.rise * 0.045));
+    const shadow = target.createRadialGradient(0, 0, 0, 0, 0, 1);
+    shadow.addColorStop(0, '#21190e8a');
+    shadow.addColorStop(0.46, '#21190e53');
+    shadow.addColorStop(1, '#21190e00');
+    target.save();
+    target.translate(surface.x, surface.y);
+    target.scale(shadowWidth, shadowWidth * 0.42);
+    target.fillStyle = shadow;
+    target.fillRect(-1, -1, 2, 2);
+    target.restore();
     if (selected) {
       const marker: Point[] = [];
-      const steps = 30;
+      const steps = 36;
       for (let i = 0; i <= steps; i++) {
         const arc = i / steps * Math.PI * 2;
-        marker.push(project(x + 0.49 * Math.cos(arc), 0.025, z + 0.49 * Math.sin(arc)));
+        marker.push(project(x + 0.42 * Math.cos(arc), 0.026, z + 0.42 * Math.sin(arc)));
       }
-      line(target, '#d9f99a', ratio * 1.65, ...marker);
+      line(target, '#1725148a', ratio * 3.15, ...marker);
+      line(target, '#ddffa2', ratio * 1.8, ...marker);
       if (charge > 0) line(target, Math.abs(charge - 0.62) < 0.085 ? '#f1ffe2' : '#ffc763', ratio * 2.7, ...marker.slice(0, 2 + Math.floor(Math.min(1, charge / 1.2) * (steps - 1))));
     }
 
-    const signs = [1, -1].sort((a, b) => at(b * 0.28, 1.4, 0).depth - at(a * 0.28, 1.4, 0).depth);
-    const paintArm = (sign: number) => {
-      const stride = Math.sin(cycle + (sign === 1 ? 0 : Math.PI)) * speed * 0.36;
-      const dribble = state.ball.ownerId === player.id && sign === 1;
-      const shoulder = at(sign * 0.235, 1.57, 0.015);
-      const elbow = at(sign * (raising ? 0.31 : 0.277), raising ? 1.8 : 1.32, raising ? 0.19 : dribble ? 0.2 : -stride * 0.65);
-      const hand = at(sign * (raising ? 0.155 : 0.28), raising ? 2.01 : dribble ? 1.04 : 1.12, raising ? 0.26 : dribble ? 0.35 : -stride + 0.04);
-      line(target, '#263029', width * 0.98, shoulder, elbow, hand);
-      line(target, skin, width * 0.81, shoulder, elbow, hand);
-      disc(target, hand, width * 0.43, width * 0.46, skin);
+    const order = acrossCamera < 0 ? [1, 0] : [0, 1];
+    const paintArm = (i: number) => {
+      const limb = pose.arms[i];
+      const a = joint(limb.start);
+      const b = joint(limb.joint);
+      const c = joint(limb.end);
+      tapered(target, skin, a, b, unit * 0.074 * thickness, unit * 0.1 * thickness, unit * 0.052 * thickness);
+      tapered(target, skin, b, c, unit * 0.051 * thickness, unit * 0.072 * thickness, unit * 0.032 * thickness);
+      if (i === 1 && hash % 5 === 0) {
+        const cuff = at(limb.end.x * 0.83 + limb.joint.x * 0.17, limb.end.y * 0.83 + limb.joint.y * 0.17, limb.end.z * 0.83 + limb.joint.z * 0.17);
+        tapered(target, strip, cuff, c, unit * 0.04, unit * 0.042, unit * 0.036);
+      }
+      const hand = at(limb.end.x + (limb.end.x - limb.joint.x) * 0.12, limb.end.y + (limb.end.y - limb.joint.y) * 0.12 + limb.pitch * 0.026,
+        limb.end.z + (limb.end.z - limb.joint.z) * 0.12);
+      tapered(target, skin, c, hand, unit * 0.032, unit * 0.052, unit * 0.041);
     };
-    for (const sign of signs) {
-      const phase = cycle + (sign > 0 ? 0 : Math.PI);
-      const step = Math.sin(phase) * speed * 0.36;
-      const lift = Math.max(0, Math.cos(phase)) * speed * 0.17;
-      const hip = at(sign * 0.122, 1.06, 0);
-      const knee = at(sign * (screen ? 0.29 : 0.145), 0.54 + lift * 0.32, 0.075 + step * 0.62);
-      const ankle = at(sign * (screen ? 0.34 : 0.16), 0.12 + lift, step);
-      const toe = at(sign * (screen ? 0.34 : 0.16), 0.079 + lift, step + 0.175);
-      line(target, '#27302c', width * 1.25, hip, knee, ankle);
-      line(target, skin, width * 0.77, knee, ankle);
-      line(target, jersey, width * 1.12, hip, at(sign * 0.141, 0.68 + lift * 0.24, 0.065 + step * 0.5));
-      line(target, '#39403c', width * 1.03, ankle, toe);
-      line(target, hash % 3 === 1 ? '#bcc1ad' : '#e3e4d5', width * 0.74, ankle, toe);
+
+    for (const i of order) {
+      const limb = pose.legs[i];
+      const hip = joint(limb.start);
+      const knee = joint(limb.joint);
+      const ankle = joint(limb.end);
+      const hem = at(limb.joint.x * 0.83 + limb.start.x * 0.17, limb.joint.y * 0.83 + limb.start.y * 0.17, limb.joint.z * 0.83 + limb.start.z * 0.17);
+      tapered(target, skin, knee, ankle, unit * 0.057 * thickness, unit * 0.105 * thickness, unit * 0.034 * thickness);
+      tapered(target, shorts, hip, hem, unit * 0.105 * thickness, unit * 0.139 * thickness, unit * 0.095 * thickness);
+      if (detail) {
+        const seam = i === 0 ? -0.098 : 0.098;
+        line(target, strip, Math.max(0.65, unit * 0.018), at(limb.start.x + seam, limb.start.y, limb.start.z + 0.035),
+          at(limb.joint.x * 0.83 + limb.start.x * 0.17 + seam, limb.joint.y * 0.83 + limb.start.y * 0.17, limb.joint.z * 0.83 + limb.start.z * 0.17 + 0.015));
+      }
+      const top = at(limb.end.x * 0.78 + limb.joint.x * 0.22, limb.end.y * 0.78 + limb.joint.y * 0.22, limb.end.z * 0.78 + limb.joint.z * 0.22);
+      tapered(target, socks, top, ankle, unit * 0.045, unit * 0.053, unit * 0.042);
+      const heel = at(limb.end.x, limb.end.y - 0.048, limb.end.z - 0.061);
+      const toe = at(limb.end.x, limb.end.y - 0.044 + limb.pitch * 0.115, limb.end.z + 0.185);
+      tapered(target, sole, { ...heel, y: heel.y + unit * 0.022 }, { ...toe, y: toe.y + unit * 0.022 }, unit * 0.049, unit * 0.057, unit * 0.039);
+      tapered(target, boot, heel, toe, unit * 0.063, unit * 0.066, unit * 0.039);
+      if (detail) line(target, strip, Math.max(0.65, unit * 0.016), heel, at(limb.end.x - 0.04, limb.end.y - 0.038, limb.end.z + 0.03));
     }
 
-    paintArm(signs[0]);
-    const chestLeft = at(-0.23, 1.61, 0);
-    const chestRight = at(0.23, 1.61, 0);
-    const leftHip = at(-0.157, 1.08, 0);
-    const rightHip = at(0.157, 1.08, 0);
-    const torsoTop = at(0, 1.57, 0);
-    const torsoBottom = at(0, 1.12, 0);
-    line(target, '#26322e', width * 2.37, torsoTop, torsoBottom);
-    line(target, jersey, width * 1.96, torsoTop, torsoBottom);
-    shape(target, jersey, chestLeft, chestRight, rightHip, leftHip);
-    line(target, strip, width * 0.35, at(-0.12, 1.65, 0.025), at(0, 1.58, 0.05), at(0.12, 1.65, 0.025));
-    line(target, strip, width * 0.22, at(-0.18, 1.53, 0), leftHip);
-    line(target, strip, width * 0.22, at(0.18, 1.53, 0), rightHip);
-    paintArm(signs[1]);
-    const skull = at(0, 1.86, 0);
-    line(target, skin, headWidth * 0.6, at(0, 1.63, 0), skull);
-    disc(target, at(0, 1.83, 0.018), headWidth * 0.45, headWidth * 0.49, skin);
-    disc(target, skull, headWidth * 0.56, headWidth * 0.75, skin);
+    paintArm(order[0]);
+    tapered(target, skin, upper(0, 1.63, 0), upper(0, 1.805, 0), unit * 0.077, unit * 0.082, unit * 0.06);
+    const panel = (depth: number) => [upper(-0.136, 1.69, depth * 0.057), upper(-0.234, 1.62, depth * 0.067), upper(-0.198, 1.42, depth * 0.088), upper(-0.175, 1.16, depth * 0.087),
+      upper(0.175, 1.16, depth * 0.087), upper(0.198, 1.42, depth * 0.088), upper(0.234, 1.62, depth * 0.067), upper(0.136, 1.69, depth * 0.057)];
+    const facingPanel = panel(showFront);
+    shape(target, colors(jersey)[2], ...panel(-showFront));
+    shape(target, lit(target, jersey, upper(-0.22, 1.4, 0), upper(0.23, 1.4, 0)), ...facingPanel);
+    const trimWidth = Math.max(0.68, unit * 0.026);
+    line(target, strip, trimWidth, facingPanel[0], upper(0, showFront === 1 ? 1.614 : 1.659, 0.119 * showFront), facingPanel[7]);
+    line(target, strip, trimWidth * 0.78, facingPanel[1], facingPanel[2], facingPanel[3]);
+    line(target, strip, trimWidth * 0.76, facingPanel[6], facingPanel[5], facingPanel[4]);
+    if (detail) {
+      line(target, colors(jersey)[2], trimWidth * 0.47, upper(-0.12, 1.25, 0.114 * showFront), upper(0.055, 1.22, 0.113 * showFront));
+      line(target, colors(jersey)[0], trimWidth * 0.4, upper(0.06, 1.3, 0.115 * showFront), upper(0.12, 1.24, 0.11 * showFront));
+    }
+    const digit = upper(0, 1.44, 0.147 * showFront);
+    const leftNumber = upper(-0.09, 1.44, 0.144 * showFront);
+    const rightNumber = upper(0.09, 1.44, 0.144 * showFront);
+    const widthFactor = Math.hypot(rightNumber.x - leftNumber.x, rightNumber.y - leftNumber.y) / Math.max(1, unit * 0.18);
+    if (widthFactor > 0.36 && digit.depth >= -1 && digit.depth <= 1) {
+      target.save();
+      target.translate(digit.x, digit.y);
+      target.scale(Math.min(1.05, widthFactor), 1);
+      target.textAlign = 'center';
+      target.textBaseline = 'middle';
+      target.fillStyle = player.side === 0 ? '#fbf4df' : '#1b2528';
+      target.font = `900 ${Math.max(5.4 * ratio, size * 0.139)}px sans-serif`;
+      target.fillText(String(player.profile.number), 0, 0);
+      if (detail && size > 58 * ratio) {
+        target.font = `800 ${Math.max(3.1 * ratio, size * 0.045)}px sans-serif`;
+        target.fillText(team.abbreviation, 0, -size * 0.085);
+      }
+      target.restore();
+    }
+    paintArm(order[1]);
+
+    const skull = upper(0, 1.888, 0.009);
+    const jaw = upper(0, 1.833, 0.037);
+    const skullColor = lit(target, skin, { ...skull, x: skull.x + unit * 0.10, y: skull.y + unit * 0.06 }, { ...skull, x: skull.x - unit * 0.11, y: skull.y - unit * 0.1 });
+    disc(target, jaw, unit * 0.076, unit * 0.083, skullColor);
+    disc(target, skull, unit * 0.094, unit * 0.11, skullColor);
+    if (detail) {
+      const ear = upper(acrossCamera >= 0 ? 0.086 : -0.086, 1.87, 0.006);
+      disc(target, ear, unit * 0.018, unit * 0.028, colors(skin)[2]);
+    }
     if (hairstyle !== 'shaved') {
-      const hair = at(0, hairstyle === 'curls' ? 1.981 : 1.951, -0.027);
-      disc(target, hair, headWidth * 0.56, headWidth * (hairstyle === 'buzz' ? 0.27 : 0.41), '#302722');
-      if (hairstyle === 'braids') {
-        line(target, '#302722', headWidth * 0.19, hair, at(-0.038, 1.83, -0.112));
-        line(target, '#302722', headWidth * 0.19, hair, at(0.043, 1.83, -0.112));
+      const top = upper(0, hairstyle === 'curls' ? 1.982 : 1.969, -0.028);
+      const hairTint = lit(target, hairColor, { ...top, x: top.x + unit * 0.09 }, { ...top, x: top.x - unit * 0.09 });
+      disc(target, top, unit * (hairstyle === 'curls' ? 0.101 : 0.091), unit * (hairstyle === 'buzz' ? 0.035 : 0.053), hairTint);
+      if (detail && hairstyle === 'curls') {
+        for (let curl = 0; curl < 5; curl++) {
+          const angle = curl * 2.399;
+          disc(target, upper(Math.cos(angle) * 0.065, 1.993 + (curl % 2) * 0.013, Math.sin(angle) * 0.05 - 0.022), unit * 0.029, unit * 0.025, hairTint);
+        }
+      }
+      if (detail && hairstyle === 'braids') {
+        for (const side of [-0.05, -0.018, 0.019, 0.05]) line(target, hairColor, unit * 0.014, upper(side, 1.976, -0.06), upper(side, 1.863, -0.105));
       }
     }
-    if (size > 44 && (camera.position.x - x) * fx + (camera.position.z - z) * fz > 0) {
-      disc(target, at(0, 1.86, 0.108), headWidth * 0.15, headWidth * 0.17, skin);
-      for (const side of [-1, 1]) {
-        line(target, '#392a25', headWidth * 0.09, at(side * 0.023, 1.903, 0.092), at(side * 0.065, 1.905, 0.077));
-      }
+    if (detail && towardCamera > 0) {
+      const nose = upper(0, 1.866, 0.108);
+      disc(target, nose, unit * 0.016, unit * 0.018, colors(skin)[0]);
+      for (const side of [-1, 1]) line(target, colors(skin)[2], Math.max(0.52, unit * 0.009), upper(side * 0.025, 1.905, 0.093), upper(side * 0.063, 1.901, 0.077));
+      if (hash % 6 === 0) line(target, hairColor, unit * 0.023, upper(-0.051, 1.843, 0.087), upper(0, 1.821, 0.086), upper(0.051, 1.843, 0.087));
     }
-    const number = at(0, 1.39, 0.08);
-    target.font = `900 ${Math.max(5 * ratio, size * 0.167)}px sans-serif`;
-    target.textAlign = 'center';
-    target.textBaseline = 'middle';
-    target.fillStyle = player.side === 0 ? '#faf2da' : '#1e2929';
-    target.fillText(String(player.profile.number), number.x, number.y);
+    if (detail && hash % 11 === 0) line(target, strip, unit * 0.02, upper(-0.088, 1.954, 0.022), upper(0, 1.948, 0.083), upper(0.088, 1.954, 0.022));
     picks.push({ id: player.id, x: (ground.x + head.x) / 2, y: (ground.y + head.y) / 2, radius: Math.max(11 * ratio, size * 0.55) });
   }
 
@@ -358,9 +536,11 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
       canvas.height = backdrop.height = h;
     }
     camera.aspect = w / h;
-    fitCamera(state, selectedId);
+    const time = performance.now() / 1000;
+    placeCamera(state, view, selectedId, Math.min(0.08, time - lastFrame));
+    lastFrame = time;
     const blacktop = state.config.mode === 'blacktop';
-    const nextKey = [w, h, blacktop, view, quality, ...camera.position.toArray()].join(',');
+    const nextKey = [w, h, blacktop, view, quality, ...camera.matrixWorld.elements.map((number) => number.toFixed(3))].join(',');
     if (nextKey !== stateKey) {
       paintArena(blacktop);
       stateKey = nextKey;
@@ -369,29 +549,53 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
     picks = [];
     const ball = state.ball.position;
     const ballGround = project(ball.x, 0.02, ball.z);
-    disc(ctx, ballGround, 3.7 * ratio, 1.65 * ratio, '#2119096b');
+    const ballScale = Math.max(2.1 * ratio, Math.abs(ballGround.y - project(ball.x, 0.155, ball.z).y));
+    disc(ctx, ballGround, ballScale * (1 + ball.y * 0.14), ballScale * 0.46, `rgba(33,25,9,${0.39 / (1 + ball.y * 0.38)})`);
+    const elapsed = Math.max(0, Math.min(8, state.tick - lastBallTick)) / TICK_RATE;
+    if (state.tick < lastBallTick) ballRoll = 0;
+    const { spin } = state.ball as typeof state.ball & { spin?: Vec3 };
+    ballRoll = (ballRoll + elapsed * (spin ? spin.x * 0.25 + spin.y * 0.3 + spin.z * 0.72 : state.ball.velocity.x * 0.35 + 3.3)) % (Math.PI * 2);
+    lastBallTick = state.tick;
+    const recent = motionEvents(state);
+    if (actors.size > state.players.length) {
+      const lineup = new Set(state.players.map(({ id }) => id));
+      for (const id of actors.keys()) if (!lineup.has(id)) actors.delete(id);
+    }
     const ordered = state.players.map((player) => {
       const { x, z } = player.position;
-      return { order: project(x, 0, z).depth, paint: () => paintPlayer(ctx, player, state, selectedId === player.id, ratio) };
+      return { order: project(x, 0, z).depth, paint: () => paintActor(ctx, player, state, selectedId === player.id, ratio, recent.get(player.id)) };
     });
     for (const side of [-1, 1]) {
-      ordered.push({ order: project(side * COURT.rimX, 0, 0).depth, paint: () => paintHoop(ctx, side, ratio) });
+      ordered.push({ order: project(side * COURT.rimX, 0, 0).depth, paint: () => paintHoop(ctx, side, ratio, state) });
     }
     ordered.push({
-      order: ballGround.depth - 0.0001,
+      order: project(ball.x, ball.y, ball.z).depth - 0.00002,
       paint() {
         const center = project(ball.x, Math.max(0.12, ball.y), ball.z);
         const raised = project(ball.x, Math.max(0.12, ball.y) + 0.12, ball.z);
         const r = Math.max(1.7 * ratio, Math.hypot(center.x - raised.x, center.y - raised.y));
-        disc(ctx, center, r, r, '#dc7a33', '#633317');
-        if (center.depth >= -1 && center.depth <= 1) {
-          ctx.beginPath();
-          ctx.moveTo(center.x - r * 0.88, center.y);
-          ctx.quadraticCurveTo(center.x, center.y - r * 0.5, center.x + r * 0.85, center.y + r * 0.25);
-          ctx.strokeStyle = '#784020';
-          ctx.lineWidth = Math.max(0.55, ratio * 0.5);
-          ctx.stroke();
-        }
+        if (center.depth < -1 || center.depth > 1) return;
+        const glow = ctx.createRadialGradient(center.x - r * 0.35, center.y - r * 0.51, r * 0.02, center.x, center.y, r * 1.13);
+        glow.addColorStop(0, '#ffc37c');
+        glow.addColorStop(0.48, '#e68539');
+        glow.addColorStop(0.86, '#b35020');
+        glow.addColorStop(1, '#71311c');
+        disc(ctx, center, r, r, glow);
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.rotate(ballRoll);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 0.98, r * 0.98, 0, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.moveTo(-r, r * 0.12);
+        ctx.quadraticCurveTo(0, -r * 0.28, r, r * 0.12);
+        ctx.moveTo(-r * 0.16, -r);
+        ctx.bezierCurveTo(r * 0.52, -r * 0.42, r * 0.46, r * 0.47, -r * 0.22, r);
+        ctx.strokeStyle = '#552715c0';
+        ctx.lineWidth = Math.max(0.55, r * 0.092);
+        ctx.stroke();
+        ctx.restore();
       },
     });
     ordered.sort((a, b) => b.order - a.order);

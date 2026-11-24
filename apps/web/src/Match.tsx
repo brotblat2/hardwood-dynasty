@@ -5,7 +5,7 @@ import { TICK_RATE, COURT } from '../../../packages/contracts/index.ts';
 import { createEngine, IDEAL_RELEASE } from '../../../packages/game-engine/index.ts';
 import { createCoach } from '../../../packages/basketball-ai/index.ts';
 import { createRenderer } from '../../../packages/rendering/index.ts';
-import { TouchControls, useControls, KEYBOARD_HINTS } from '../../../packages/controls/index.tsx';
+import { TouchControls, useControls, KEYBOARD_HINTS, selectDirectionalPassTarget } from '../../../packages/controls/index.tsx';
 import type { KeyboardBindings } from '../../../packages/controls/index.tsx';
 import { createRoomClient } from '../../../packages/multiplayer/index.ts';
 import { createCourtAudio } from './court-audio.ts';
@@ -54,6 +54,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const controls = useControls({ enabled: !paused && !error && ready, bindings });
   const readControl = useRef(controls.read);
   readControl.current = controls.read;
+  const sampleGamepad = useRef(controls.sampleGamepad);
+  sampleGamepad.current = controls.sampleGamepad;
   const benchAction = useRef<{ timeout?: boolean; substituteId?: string }>({});
   const [benchPlayer, setBenchPlayer] = useState('');
   const snapshot = useRef(onSnapshot);
@@ -118,12 +120,12 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       }
     }
     const readFor = (state: GameState): { id: string; input: Control } => {
-      const input = readControl.current();
+      const { switchPlayer, passAim, ...input } = readControl.current();
       const own = state.players.filter(player => player.side === side.current);
       const owner = own.find(player => player.id === state.ball.ownerId);
       if (!own.some(player => player.id === selected.current)) selected.current = initialSelection(state, side.current, setup.playerLock);
       if (!setup.playerLock) {
-        if (input.switchPlayer) {
+        if (switchPlayer) {
           autoFollow.current = false;
           const nearest = [...own].filter(player => player.id !== selected.current).sort((a, b) => {
             const distance = (p: typeof a) => Math.hypot(p.position.x - state.ball.position.x, p.position.z - state.ball.position.z);
@@ -134,8 +136,14 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         if (owner && autoFollow.current) selected.current = owner.id;
         if (!owner) autoFollow.current = true;
       }
-      if (input.pass && passTarget.current) {
-        input.targetId = passTarget.current;
+      if (input.pass && owner?.id === selected.current) {
+        if (passTarget.current && own.some(player => player.id === passTarget.current && player.id !== owner.id)) {
+          input.targetId = passTarget.current;
+        } else if (passAim) {
+          const aim = renderer.current?.projectMove(passAim) ?? passAim;
+          const target = selectDirectionalPassTarget(owner, own, aim);
+          if (target) input.targetId = target;
+        }
         passTarget.current = undefined;
       }
       input.move = renderer.current?.projectMove(input.move) ?? input.move;
@@ -153,6 +161,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     let residual = 0;
     const tickMs = 1000 / TICK_RATE;
     const loop = (now: number) => {
+      if (!pausedRef.current) sampleGamepad.current();
       if (!document.hidden && quality === 'auto' && graphicsQuality === 'high' && !qualityAdjusted) {
         const frameMs = now - last;
         if (frameMs > 0 && frameMs < 150) {
@@ -232,6 +241,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const bench = hud?.teams[side.current].roster.filter(player => !hud.players.some(active => active.id === player.id)) ?? [];
   const event = hud?.events.at(-1);
   const finish = hud?.phase === 'final';
+  const touchContext = hud?.ball.kind === 'loose' || hud?.ball.kind === 'shot'
+    ? 'loose' : hud?.possession === side.current ? 'offense' : 'defense';
   const lastScore = hud?.events.findLast(value => value.type === 'score');
   const scoreFlash = lastScore && hud && hud.tick - lastScore.tick < TICK_RATE;
   const charge = hud?.charge[selection] ?? 0;
@@ -266,9 +277,9 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         <div className="score-team"><strong>{hud.score[1]}</strong>{hud.teams[1].abbreviation}<i style={{ background: hud.teams[1].color }} /></div>
       </div>}
       <div className="match-tools right">
-        <select aria-label="Camera" value={cameraMode} onChange={event => { setCameraMode(event.target.value as Camera); setTimeout(() => stage.current?.focus(), 0); }}>
+        <label className="match-camera"><svg aria-hidden="true" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="2" y="5" width="13" height="14" rx="3"/><path d="m15 10 6-4v12l-6-4"/></svg><select aria-label="Camera" value={cameraMode} onChange={event => { setCameraMode(event.target.value as Camera); setTimeout(() => stage.current?.focus(), 0); }}>
           <option value="broadcast">Broadcast</option><option value="baseline">Baseline</option><option value="courtside">Courtside</option><option value="player">Player lock</option><option value="cinematic">Cinematic</option>
-        </select>
+        </select></label>
         {!setup.online && <button className="icon-button" aria-label="Pause game" onClick={() => setPaused(true)}>Ⅱ</button>}
       </div>
     </div>
@@ -278,7 +289,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       <div className={'meter release' + (charge > 0 ? ' active' : '')} aria-label="Shot release"><i style={{ width: Math.min(100, charge / 1.2 * 100) + '%' }} /><b style={{ left: (IDEAL_RELEASE / 1.2 * 100) + '%' }} /></div>
       {event && event.type !== 'pass' && <p>{event.detail ?? ({ score: 'Basket', miss: 'Missed shot', rebound: 'Rebound', steal: 'Steal', block: 'Block', shot: 'Shot attempt', foul: 'Foul', turnover: 'Turnover', period: 'Period ended', assist: 'Assist', timeout: 'Timeout', substitution: 'Substitution' } as Record<string, string>)[event.type]}</p>}
     </div>}
-    <TouchControls touch={controls.touch} />
+    <TouchControls touch={controls.touch} context={touchContext} visible={paused || finish || !ready ? false : undefined} />
     {showControls && <div className="control-help"><div className="panel-head"><h3>Keyboard controls</h3><button className="icon-button" onClick={() => { setShowControls(false); stage.current?.focus(); }}>×</button></div>
       {KEYBOARD_HINTS.map(([label, key]) => <div key={label}><span>{label}</span><kbd>{key}</kbd></div>)}
     </div>}

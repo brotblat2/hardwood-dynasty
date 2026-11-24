@@ -1,11 +1,13 @@
 import * as THREE from 'three';
-import { COURT, TICK_RATE } from '../contracts/index.ts';
-import type { GameState, Vec2 } from '../contracts/index.ts';
+import { TICK_RATE } from '../contracts/index.ts';
+import type { GameState, Vec2, Vec3 } from '../contracts/index.ts';
 import { makeArena, makeHoops } from './arena.ts';
 import { makeBall, makeCourt, makeCourtTexture } from './court.ts';
 import { makePlayerFactory } from './player.ts';
 import { courtMovement } from './input-view.ts';
 import { createCanvasFallback } from './fallback.ts';
+import { makeGameCamera } from './camera.ts';
+import { motionEvents } from './motion.ts';
 
 export type Camera = 'broadcast' | 'baseline' | 'courtside' | 'player' | 'cinematic';
 export type Quality = 'low' | 'high';
@@ -51,7 +53,7 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
 
   webgl.outputColorSpace = THREE.SRGBColorSpace;
   webgl.toneMapping = THREE.NeutralToneMapping;
-  webgl.toneMappingExposure = 0.9;
+  webgl.toneMappingExposure = 0.94;
   webgl.shadowMap.type = THREE.PCFShadowMap;
   const element = webgl.domElement;
   element.style.display = 'block';
@@ -69,24 +71,21 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   scene.background = indoorColor;
   scene.fog = new THREE.FogExp2(indoorColor, 0.012);
   const perspective = new THREE.PerspectiveCamera(36, 1, 0.13, 115);
-  const desiredPosition = new THREE.Vector3();
-  const desiredTarget = new THREE.Vector3();
-  const cameraTarget = new THREE.Vector3();
-  let cameraReady = false;
+  const placeCamera = makeGameCamera(perspective);
   let lastFrame = 0;
-  let lastStateTick = -1;
   let lastCrowdDraw = -Infinity;
   let floorMode: boolean | undefined;
   let lastWidth = 0;
   let lastHeight = 0;
   let lastRatio = 0;
   let lastBallTick = -1;
-  let lastBallOwner: string | null = null;
+  const ballAxis = new THREE.Vector3();
+  const ballTurn = new THREE.Quaternion();
 
-  const ambient = new THREE.HemisphereLight(0xffecd2, 0x88918e, 2.03);
+  const ambient = new THREE.HemisphereLight(0xffecd2, 0x61777b, 1.52);
   scene.add(ambient);
-  const key = new THREE.DirectionalLight(0xfff0d8, 2.12);
-  key.position.set(-4.5, 14, 7);
+  const key = new THREE.DirectionalLight(0xfff0df, 2.55);
+  key.position.set(-6.4, 16, 8);
   key.castShadow = true;
   key.shadow.camera.left = -17;
   key.shadow.camera.right = 17;
@@ -94,12 +93,15 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   key.shadow.camera.bottom = -11;
   key.shadow.camera.near = 0.2;
   key.shadow.camera.far = 33;
-  key.shadow.mapSize.set(1024, 1024);
-  key.shadow.normalBias = 0.028;
-  key.shadow.bias = -0.00008;
-  const fill = new THREE.DirectionalLight(0xdbeeff, 0.66);
+  key.shadow.mapSize.set(1536, 1536);
+  key.shadow.normalBias = 0.018;
+  key.shadow.bias = -0.00007;
+  key.shadow.radius = 2;
+  const fill = new THREE.DirectionalLight(0xdbeeff, 1.24);
   fill.position.set(7, 9, -12);
-  scene.add(key, fill);
+  const bounce = new THREE.DirectionalLight(0xffd69a, 0.26);
+  bounce.position.set(2.3, -4.2, 7);
+  scene.add(key, fill, bounce);
 
   const arena = makeArena();
   const court = makeCourt();
@@ -112,7 +114,7 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
   const samples = new Map<string, PickTarget>();
   const projectedFeet = new THREE.Vector3();
   const projectedHead = new THREE.Vector3();
-  scene.add(arena.group, court, hoops, ball);
+  scene.add(arena.group, court, hoops.group, ball);
 
   const ballShadow = new THREE.Mesh(
     new THREE.CircleGeometry(0.17, 24),
@@ -155,58 +157,10 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     ambient.color.set(blacktop ? 0xd0edff : 0xffecd2);
     key.color.set(blacktop ? 0xffe2be : 0xfff0d8);
     if (!textures.has(blacktop)) textures.set(blacktop, makeCourtTexture(blacktop, anisotropy));
+    court.material.roughness = blacktop ? 0.82 : 0.39;
+    court.material.clearcoat = blacktop ? 0 : 0.46;
     court.material.map = textures.get(blacktop)!;
     court.material.needsUpdate = true;
-  }
-
-  function placeCamera(state: GameState, selectedId: string | undefined, dt: number) {
-    const half = state.config.halfCourt === true;
-    const targetX = half ? 7.1 : 0;
-    const ballX = state.ball.position.x;
-    const ballZ = state.ball.position.z;
-    const aspect = perspective.aspect;
-    const aspectZoom = Math.max(1, 1.63 / aspect);
-    let fov = 39;
-    if (cameraMode === 'baseline') {
-      const end = half || ballX >= 0 ? 1 : -1;
-      const endTarget = half ? 7.3 : ballX * 0.28;
-      desiredTarget.set(endTarget, 0.45, ballZ * 0.11);
-      desiredPosition.set(endTarget + end * 25.5 * aspectZoom, 15 * aspectZoom, 15 * aspectZoom);
-      fov = 41;
-    } else if (cameraMode === 'courtside') {
-      const centerX = THREE.MathUtils.clamp(ballX * 0.58, half ? 5.8 : -8.4, half ? 10.25 : 8.4);
-      desiredTarget.set(centerX, 1.1, ballZ * 0.25);
-      desiredPosition.set(centerX + 1.95 * aspectZoom, 6.8 * aspectZoom, 16.7 * aspectZoom);
-      fov = 43;
-    } else if (cameraMode === 'player') {
-      const active = state.players.find((player) => player.id === selectedId) ?? state.players.find((player) => player.id === state.ball.ownerId);
-      const playerX = active?.position.x ?? ballX;
-      const playerZ = active?.position.z ?? ballZ;
-      const facing = active?.facing ?? 0;
-      const lookX = Math.cos(facing);
-      const lookZ = Math.sin(facing);
-      desiredTarget.set(playerX + lookX * 3.4, 1.18, playerZ + lookZ * 3.4);
-      desiredPosition.set(playerX - lookX * 5.5 * aspectZoom, 4.4 * aspectZoom, playerZ - lookZ * 5.5 * aspectZoom);
-      fov = 53;
-    } else if (cameraMode === 'cinematic') {
-      const phase = state.tick / TICK_RATE;
-      const centerX = THREE.MathUtils.clamp(ballX * 0.58, half ? 5.75 : -8.7, half ? 10.2 : 8.7);
-      desiredTarget.set(centerX, 1.13, ballZ * 0.25);
-      desiredPosition.set(centerX + (8.9 + 2.4 * Math.sin(phase * 0.41)) * aspectZoom, 10.8 * aspectZoom, 18.9 * aspectZoom);
-      fov = 40;
-    } else {
-      desiredTarget.set(targetX + ballX * (half ? 0.025 : 0.045), 0.22, -0.12);
-      const spread = half ? Math.max(0.91, aspectZoom * 0.78) : aspectZoom;
-      desiredPosition.set(targetX + (half ? -0.8 : 0), 21.8 * spread, 24.8 * spread);
-    }
-    const settle = cameraReady ? 1 - Math.exp(-dt * (cameraMode === 'player' ? 9.2 : 5.8)) : 1;
-    perspective.position.lerp(desiredPosition, settle);
-    perspective.fov = THREE.MathUtils.lerp(perspective.fov, fov, settle);
-    cameraTarget.lerp(desiredTarget, settle);
-    perspective.lookAt(cameraTarget);
-    perspective.updateProjectionMatrix();
-    perspective.updateMatrixWorld();
-    cameraReady = true;
   }
 
   function draw(state: GameState, selectedId?: string) {
@@ -214,8 +168,6 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
     const time = performance.now() / 1_000;
     const dt = Math.min(0.1, time - lastFrame);
     lastFrame = time;
-    if (state.tick < lastStateTick) cameraReady = false;
-    lastStateTick = state.tick;
     setMode(state.config.mode === 'blacktop');
     if (time - lastCrowdDraw > (quality === 'high' ? 0.076 : 0.16)) {
       const score = state.events.findLast((event) => event.type === 'score');
@@ -224,8 +176,9 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
       lastCrowdDraw = time;
     }
 
-    placeCamera(state, selectedId, dt);
-    const stateTime = state.tick / TICK_RATE;
+    placeCamera(state, cameraMode, selectedId, dt);
+    const events = motionEvents(state);
+    hoops.animate(state);
     const activeIds = new Set<string>();
     samples.clear();
     for (const player of state.players) {
@@ -237,7 +190,7 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
         scene.add(actor.root);
       }
       const hasBall = state.ball.ownerId === player.id;
-      actor.animate(player, stateTime, hasBall ? state.ball.position : undefined, selectedId === player.id, state.charge[player.id] ?? 0);
+      actor.animate(player, state.tick, hasBall ? state.ball.position : undefined, selectedId === player.id, state.charge[player.id] ?? 0, events.get(player.id));
       projectedFeet.set(player.position.x, 0.05, player.position.z).project(perspective);
       projectedHead.set(player.position.x, 2, player.position.z).project(perspective);
       if (projectedFeet.z >= -1 && projectedFeet.z <= 1) {
@@ -258,17 +211,15 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
       players.delete(id);
     }
 
-    const { position, velocity, ownerId } = state.ball;
-    ball.position.set(position.x, Math.max(position.y, 0.12), position.z);
-    const elapsedTicks = Math.max(0, Math.min(8, state.tick - lastBallTick));
-    if (lastBallOwner !== ownerId) ball.rotation.set(0, 0, 0);
-    if (ownerId === null) {
-      ball.rotation.x += (velocity.z * 0.55 + 2.2) * elapsedTicks / TICK_RATE;
-      ball.rotation.z -= (velocity.x * 0.7 + 2.8) * elapsedTicks / TICK_RATE;
-    } else {
-      ball.rotation.y = Math.sin(stateTime * 4) * 0.7;
-    }
-    lastBallOwner = ownerId;
+    const { position, velocity, ownerId, spin } = state.ball as typeof state.ball & { spin?: Vec3 };
+    ball.position.set(position.x, Math.max(position.y, 0.122), position.z);
+    const elapsed = Math.max(0, Math.min(8, state.tick - lastBallTick)) / TICK_RATE;
+    if (state.tick < lastBallTick) ball.quaternion.identity();
+    if (spin) ballAxis.set(spin.x, spin.y, spin.z);
+    else if (ownerId === null) ballAxis.set(velocity.z * 0.55 + 2.2, 0.4, -velocity.x * 0.7 - 2.8);
+    else ballAxis.set(1.1, 2.4, 0.36);
+    const radians = ballAxis.length() * elapsed;
+    if (radians) ball.quaternion.premultiply(ballTurn.setFromAxisAngle(ballAxis.normalize(), radians));
     lastBallTick = state.tick;
     ballShadow.position.set(position.x, 0.014, position.z);
     ballShadow.scale.setScalar(1 + Math.min(position.y, 8) * 0.18);

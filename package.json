@@ -1,0 +1,16 @@
+{
+  "name": "hardwood-dynasty",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 apps/web",
+    "build": "vite build apps/web --outDir ../../dist --emptyOutDir",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
+    "server": "node apps/multiplayer-server/server.ts"
+  },
+  "dependencies": {"react": "^19.1.0", "react-dom": "^19.1.0", "three": "^0.179.1", "ws": "^8.18.3"},
+  "devDependencies": {"@types/node": "^24.0.0", "@types/react": "^19.1.0", "@types/react-dom": "^19.1.0", "@types/three": "^0.179.0", "@types/ws": "^8.18.1", "typescript": "^5.9.2", "vite": "^7.1.7", "@playwright/test": "^1.55.1"}
+}

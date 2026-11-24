@@ -12,8 +12,8 @@ import type { MatchSetup, Camera } from './Match.tsx';
 import { CareerHub, FranchiseHub } from './Management.tsx';
 
 type Page = 'home' | 'play' | 'franchise' | 'career' | 'online' | 'blacktop' | 'practice' | 'rosters' | 'settings';
-type Settings = { difficulty: Difficulty; quality: 'low' | 'high'; camera: Camera; novelty: boolean; server: string; keyboard?: KeyboardBindings };
-const defaults: Settings = { difficulty: 'Pro', quality: 'low', camera: 'broadcast', novelty: false, server: '' };
+type Settings = { difficulty: Difficulty; quality: 'auto' | 'low' | 'high'; camera: Camera; novelty: boolean; server: string; keyboard?: KeyboardBindings; mute?: boolean };
+const defaults: Settings = { difficulty: 'Pro', quality: 'auto', camera: 'broadcast', novelty: false, server: '' };
 const menu: { id: Exclude<Page, 'home'>; title: string }[] = [
   { id: 'play', title: 'Play Now' }, { id: 'franchise', title: 'Franchise' }, { id: 'career', title: 'MyPlayer' },
   { id: 'online', title: 'Online' }, { id: 'blacktop', title: 'Blacktop' }, { id: 'practice', title: 'Practice' },
@@ -79,6 +79,22 @@ export function App() {
   const [roster, setRoster] = useState<RosterPack | undefined>(() => readLocal('rosters'));
   const [match, setMatch] = useState<MatchLaunch | null>(null);
   const [suspended, setSuspended] = useState<GameState | undefined>(() => readLocal('match'));
+  useEffect(() => {
+    const existing = readLocal<RosterPack>('rosters');
+    if (readLocal<boolean>('fictional') || (existing && !existing.source.startsWith('ESPN'))) return;
+    let mounted = true;
+    void import('../../../packages/roster-data/nba.ts').then(module => {
+      if (existing?.modelVersion === module.NBA_MODEL_VERSION) return;
+      return module.loadNbaRosters().then(pack => {
+        if (!mounted || readLocal<boolean>('fictional')) return;
+        const stored = readLocal<RosterPack>('rosters');
+        if (stored && !stored.source.startsWith('ESPN')) return;
+        setRoster(pack);
+        writeLocal('rosters', pack);
+      });
+    }).catch(() => undefined);
+    return () => { mounted = false; };
+  }, []);
   const sourceTeams = roster?.teams ?? demoTeams;
   const teams = settings.novelty && !sourceTeams.some(team => team.id === bobovTeam.id) ? [...sourceTeams, bobovTeam] : sourceTeams;
   const launch = (setup: MatchSetup, onResult?: MatchLaunch['onResult'], save = false) => {
@@ -89,9 +105,13 @@ export function App() {
     window.scrollTo({ top: 0 });
   };
   const updateSettings = (next: Settings) => { setSettings(next); writeLocal('settings', next); };
-  const updateRoster = (pack: RosterPack | undefined) => { setRoster(pack); writeLocal('rosters', pack); };
+  const updateRoster = (pack: RosterPack | undefined) => {
+    setRoster(pack);
+    writeLocal('rosters', pack);
+    writeLocal('fictional', !pack);
+  };
   if (match) {
-    return <Match setup={match.setup} camera={settings.camera} quality={settings.quality} bindings={settings.keyboard}
+    return <Match setup={match.setup} camera={settings.camera} quality={settings.quality} bindings={settings.keyboard} mute={settings.mute}
       onExit={() => { setMatch(null); setPage(match.origin); setSuspended(readLocal('match')); }} onResult={match.onResult}
       onSnapshot={match.save ? state => writeLocal('match', state.phase === 'final' ? undefined : state) : undefined} />;
   }
@@ -145,8 +165,8 @@ export function TeamChip({ team }: { team: Team }) {
 }
 
 function Setup({ mode, teams, settings, onStart }: { mode: 'play' | 'blacktop' | 'practice'; teams: Team[]; settings: Settings; onStart(setup: MatchSetup): void }) {
-  const [homeId, setHome] = useState(teams[0].id);
-  const [awayId, setAway] = useState(teams[1].id);
+  const [homeId, setHome] = useState(teams.find(team => team.id === 'okc')?.id ?? teams[0].id);
+  const [awayId, setAway] = useState(teams.find(team => team.id === 'sa')?.id ?? teams[1].id);
   const [period, setPeriod] = useState(60);
   const [periods, setPeriods] = useState(4);
   const [target, setTarget] = useState(11);
@@ -251,14 +271,14 @@ function Rosters({ teams, pack, change }: { teams: Team[]; pack?: RosterPack; ch
   };
   const fetchReal = async () => {
     setBusy(true);
-    setStatus('Loading team rosters and player data…');
+    setStatus('Loading NBA roster and season snapshots…');
     try {
       const { loadNbaRosters } = await import('../../../packages/roster-data/nba.ts');
       const imported = await loadNbaRosters();
       change(imported);
       setTeam(imported.teams[0].id);
       const omissions = imported.omissions?.length ?? 0;
-      setStatus('Imported ' + imported.teams.length + ' NBA teams. Skill and potential ratings are game estimates.' + (omissions ? ' ' + omissions + ' incomplete player records omitted.' : ''));
+      setStatus('Loaded ' + imported.teams.length + ' NBA teams with stats-based grades.' + (omissions ? ' ' + omissions + ' incomplete player records omitted.' : ''));
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not load NBA rosters. Try a roster file instead.'); }
     finally { setBusy(false); }
   };
@@ -272,7 +292,7 @@ function Rosters({ teams, pack, change }: { teams: Team[]; pack?: RosterPack; ch
     setTimeout(() => URL.revokeObjectURL(url), 100);
   }
   return <>
-    <PageHeading title="Rosters" subtitle={pack ? pack.source + ' · ' + new Date(pack.updatedAt).toLocaleDateString() : 'Fictional starting league. Load NBA data or import your own roster pack.'} />
+    <PageHeading title="Rosters" subtitle={pack ? pack.source + ' · ' + new Date(pack.updatedAt.slice(0, 10) + 'T12:00:00').toLocaleDateString() : 'Fictional starting league. Load NBA data or import your own roster pack.'} />
     <div className="columns roster-layout">
       <section className="panel form-panel">
         <h2>Roster source</h2>
@@ -310,6 +330,16 @@ const ratingsLabels: Record<keyof Player['ratings'], string> = {
   iq: 'Decision-making', durability: 'Availability', strength: 'Strength',
 };
 function PlayerCard({ player, close }: { player: Player; close(): void }) {
+  const [grade, setGrade] = useState<Awaited<ReturnType<typeof import('../../../packages/roster-data/nba.ts')['getPlayerGrade']>>>();
+  useEffect(() => {
+    setGrade(undefined);
+    if (!player.gradeEvidence) return;
+    let active = true;
+    void import('../../../packages/roster-data/nba.ts').then(module => {
+      if (active) setGrade(module.getPlayerGrade(player));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [player]);
   const evidence = player.gradeEvidence === 'established' ? 'Stats-based rating' : player.gradeEvidence === 'limited' ? 'Limited NBA sample' : player.gradeEvidence === 'estimated' ? 'Provisional rating' : undefined;
   return <div className="player-card-overlay" onClick={close}>
     <section className="panel player-card" role="dialog" aria-modal="true" aria-label={player.name + ' ratings'} onClick={event => event.stopPropagation()}>
@@ -317,9 +347,10 @@ function PlayerCard({ player, close }: { player: Player; close(): void }) {
         <button className="button" onClick={close} autoFocus>Close</button></div>
       <div className="form-panel">
         <div className="metric-strip mini"><div className="metric"><span>Overall</span><strong>{player.overall}</strong></div><div className="metric"><span>Potential</span><strong>{player.potential}</strong></div><div className="metric"><span>Est. strength</span><strong>{player.ratings.strength ?? '—'}</strong></div></div>
-        {evidence && <p>{evidence}. Potential and strength are gameplay estimates.</p>}
+        {evidence && <p>{evidence}{grade?.minutes ? ' · ' + numberLabel(grade.minutes) + ' minutes across ' + grade.seasons.length + ' seasons' : ''}. Potential and strength are gameplay estimates.</p>}
         <div className="player-ratings">{(Object.keys(ratingsLabels) as (keyof Player['ratings'])[]).filter(key => player.ratings[key] != null).map(key =>
           <div key={key}><span>{ratingsLabels[key]}</span><meter min="25" max="99" value={player.ratings[key]!} /><strong>{player.ratings[key]}</strong></div>)}</div>
+        {grade && <details><summary>How the ratings were calculated</summary><dl>{grade.breakdown.map((row, index) => <div key={index}><dt>{row.label} · {row.value}</dt><dd>{row.detail}</dd></div>)}</dl></details>}
       </div>
     </section>
   </div>;
@@ -381,8 +412,9 @@ function SettingsView({ value, change }: { value: Settings; change(settings: Set
     <div className="columns">
       <section className="panel form-panel"><h2>Game settings</h2>
         <Field label="Difficulty"><select value={value.difficulty} onChange={event => change({ ...value, difficulty: event.target.value as Difficulty })}>{difficulties.map(difficulty => <option key={difficulty}>{difficulty}</option>)}</select></Field>
-        <Field label="Graphics"><select value={value.quality} onChange={event => change({ ...value, quality: event.target.value as Settings['quality'] })}><option value="low">Performance</option><option value="high">High quality</option></select></Field>
+        <Field label="Graphics"><select value={value.quality} onChange={event => change({ ...value, quality: event.target.value as Settings['quality'] })}><option value="auto">Automatic</option><option value="low">Performance</option><option value="high">High quality</option></select></Field>
         <Field label="Default camera"><select value={value.camera} onChange={event => change({ ...value, camera: event.target.value as Camera })}><option value="broadcast">Broadcast</option><option value="baseline">Baseline</option><option value="courtside">Courtside</option><option value="player">Player lock</option><option value="cinematic">Cinematic</option></select></Field>
+        <label className="toggle-line"><input type="checkbox" checked={value.mute ?? false} onChange={event => change({ ...value, mute: event.target.checked })} />Mute court audio</label>
         <label className="toggle-line"><input type="checkbox" checked={value.novelty} onChange={event => change({ ...value, novelty: event.target.checked })} />Enable Bobov Ballerz</label>
       </section>
       <form className="panel form-panel" onSubmit={save}><h2>Multiplayer connection</h2>

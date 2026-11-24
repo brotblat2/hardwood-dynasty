@@ -1,91 +1,99 @@
-import type { Player, Position, Ratings, Team } from '../contracts/index.ts';
-import { validateRoster, type RosterPack } from './index.ts';
+import type { Player, Position, Team } from '../contracts/index.ts';
+import { estimateStrength } from './body.ts';
+import { validateRoster } from './index.ts';
+import type { RosterPack } from './index.ts';
+import { gradeNbaPlayer } from './ratings.ts';
+import type { NbaGrade, SeasonLine } from './ratings.ts';
+import bios from './data/nba-rosters.json' with { type: 'json' };
+import stats from './data/nba-season-stats.json' with { type: 'json' };
 
-const ESPN_TEAMS = [
-  ['atl', 'East'], ['bos', 'East'], ['bkn', 'East'], ['cha', 'East'], ['chi', 'East'],
-  ['cle', 'East'], ['det', 'East'], ['ind', 'East'], ['mia', 'East'], ['mil', 'East'],
-  ['ny', 'East'], ['orl', 'East'], ['phi', 'East'], ['tor', 'East'], ['wsh', 'East'],
-  ['dal', 'West'], ['den', 'West'], ['gs', 'West'], ['hou', 'West'], ['lac', 'West'],
-  ['lal', 'West'], ['mem', 'West'], ['min', 'West'], ['no', 'West'], ['okc', 'West'],
-  ['phx', 'West'], ['por', 'West'], ['sac', 'West'], ['sa', 'West'], ['utah', 'West'],
-] as const;
-const SOURCE = 'ESPN public NBA roster JSON (https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team}/roster)';
+export const NBA_MODEL_VERSION = 2;
+const source = 'ESPN player bios · BoxScore Lab season data';
+const seasonLines = stats.players as Record<string, SeasonLine[]>;
+const espnIds = stats.espnIds as Record<string, string>;
+const nameKey = (name: string) => name.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-type EspnAthlete = {
-  id: string;
-  displayName?: string;
-  jersey?: string;
-  height?: number;
-  age?: number;
-  position?: { abbreviation?: string };
-  experience?: { years?: number };
-};
-type EspnRoster = {
-  timestamp: string;
-  team: { abbreviation: string; location: string; name: string; color?: string };
-  athletes: EspnAthlete[];
-};
-const omissions: string[] = [];
+type Athlete = { id: string; displayName?: string; jersey?: string; height?: number; weight?: number; age?: number;
+  position?: string | null; salary?: number; yearsRemaining?: number; };
+type BioTeam = { updatedAt: string; conference: Team['conference'];
+  team: { abbreviation: string; location: string; name: string; color?: string | null };
+  athletes: Athlete[]; };
+const teamsData = bios as BioTeam[];
 
-function playerPosition(value: string | undefined): Position {
-  if (value === 'PG' || value === 'SG' || value === 'SF' || value === 'PF' || value === 'C') return value;
-  if (value === 'G') return 'SG';
-  if (value === 'F') return 'SF';
-  return 'C';
+function linesFor(id: string, name: string): SeasonLine[] {
+  return seasonLines[espnIds[id] ?? nameKey(name)] ?? [];
 }
 
-function estimatedRatings(position: Position, index: number): Ratings {
-  const positional: Record<Position, number[]> = {
-    PG: [72, 68, 82, 82, 45, 76, 68, 40, 70, 70],
-    SG: [76, 72, 68, 74, 48, 76, 74, 44, 68, 70],
-    SF: [70, 74, 66, 68, 58, 70, 72, 58, 68, 70],
-    PF: [58, 74, 58, 56, 72, 62, 58, 74, 68, 70],
-    C: [44, 76, 54, 52, 80, 56, 44, 82, 68, 70],
-  };
-  const scale = index < 3 ? 1.12 : index < 8 ? 1 : 0.88;
-  const [shooting, finishing, passing, handling, rebounding, speed, perimeter, interior, iq, durability] = positional[position].map(value => Math.max(25, Math.min(99, Math.round(50 + (value - 50) * scale))));
-  return { shooting, finishing, passing, handling, rebounding, speed, perimeter, interior, iq, durability };
+function playerPosition(position: string | undefined | null, height: number, seasons: SeasonLine[]): Position {
+  if (position === 'PG' || position === 'SG' || position === 'SF' || position === 'PF' || position === 'C') return position;
+  if (position === 'G') {
+    const games = seasons.reduce((total, row) => total + row.games, 0);
+    const assists = seasons.reduce((total, row) => total + row.assists, 0);
+    return height < 1.91 || (games > 0 && assists / games > 4.4) ? 'PG' : 'SG';
+  }
+  if (position === 'F') return height > 2.025 ? 'PF' : 'SF';
+  return height >= 2.06 ? 'C' : 'SF';
 }
 
-function convertRoster(roster: EspnRoster, conference: Team['conference']): Team {
-  const color = roster.team.color && /^[0-9a-f]{6}$/i.test(roster.team.color) ? `#${roster.team.color}` : '#17408b';
-  const players: Player[] = roster.athletes.filter(athlete => typeof athlete.height === 'number' && typeof athlete.age === 'number').map((athlete, index) => {
-    const position = playerPosition(athlete.position?.abbreviation);
-    const overall = Math.round(Object.values(estimatedRatings(position, index)).reduce((sum, rating) => sum + rating, 0) / 10);
-    return {
-      id: `${roster.team.abbreviation.toLowerCase()}-${athlete.id}`,
-      name: athlete.displayName ?? `Player ${athlete.id}`,
-      number: Number.isFinite(Number(athlete.jersey)) ? Math.max(0, Math.min(99, Number(athlete.jersey))) : 0,
-      position,
-      height: athlete.height! * 0.0254,
-      age: athlete.age!,
-      overall,
-      potential: overall,
-      ratings: estimatedRatings(position, index),
-      years: typeof athlete.experience?.years === 'number' ? Math.min(15, athlete.experience.years) : undefined,
-    };
-  });
-  return {
-    id: roster.team.abbreviation.toLowerCase(), city: roster.team.location, name: roster.team.name,
-    abbreviation: roster.team.abbreviation, color, accent: '#f5f5f5', conference, roster: players,
-  };
-}
-
-/** Fetches current public ESPN roster data. Player bio gaps are left absent. Ratings are positional gameplay estimates. */
-export async function loadNbaRosters(): Promise<RosterPack> {
-  const fetched = await Promise.all(ESPN_TEAMS.map(async ([id, conference]) => {
-    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${id}/roster`);
-    if (!response.ok) throw new Error(`ESPN roster request for ${id} failed with HTTP ${response.status}.`);
-    return { data: await response.json() as EspnRoster, conference };
-  }));
-  omissions.length = 0;
-  for (const { data } of fetched) {
-    for (const athlete of data.athletes) {
-      const missing = [typeof athlete.height === 'number' ? '' : 'height', typeof athlete.age === 'number' ? '' : 'age'].filter(Boolean);
-      if (missing.length) omissions.push(`${data.team.abbreviation} ${athlete.displayName ?? athlete.id}: missing ${missing.join(', ')}`);
+function startersFirst(players: Player[]) {
+  const positions: Position[] = ['PG', 'SG', 'SF', 'PF', 'C'];
+  const byAbility = [...players].sort((a, b) => b.overall - a.overall || b.ratings.iq - a.ratings.iq || a.id.localeCompare(b.id));
+  const lineups = new Map<number, { score: number; slots: (Player | undefined)[] }>([[0, { score: 0, slots: Array(5).fill(undefined) }]]);
+  for (const player of byAbility) {
+    for (const [mask, lineup] of [...lineups]) {
+      positions.forEach((position, slot) => {
+        const next = mask | (1 << slot);
+        if (next === mask) return;
+        const distance = Math.abs(positions.indexOf(position) - positions.indexOf(player.position));
+        const score = lineup.score + player.overall - distance * 5;
+        if ((lineups.get(next)?.score ?? -Infinity) >= score) return;
+        const slots = [...lineup.slots];
+        slots[slot] = player;
+        lineups.set(next, { score, slots });
+      });
     }
   }
-  const teams = fetched.map(({ data, conference }) => convertRoster(data, conference));
-  const updatedAt = fetched.map(({ data }) => Date.parse(data.timestamp)).filter(Number.isFinite).sort((a, b) => a - b)[0];
-  return { ...validateRoster({ version: 1, source: SOURCE, updatedAt: new Date(updatedAt ?? Date.now()).toISOString(), teams }), omissions: [...omissions] };
+  const starters = lineups.get(31)?.slots.filter((player): player is Player => !!player) ?? [];
+  return [...starters, ...byAbility.filter(player => !starters.includes(player))];
+}
+
+export function getPlayerGrade(player: Player): NbaGrade {
+  return gradeNbaPlayer(player.position, linesFor(player.id.split('-').at(-1) ?? '', player.name), player.age);
+}
+
+function convertRoster(data: BioTeam, ids: Set<string>, omissions: string[]): Team {
+  const { team, conference } = data;
+  const roster: Player[] = [];
+  for (const athlete of data.athletes) {
+    const { id, displayName: name, age, height: inches } = athlete;
+    if (!name || !id || typeof age !== 'number' || typeof inches !== 'number' ||
+      !Number.isFinite(age) || !Number.isFinite(inches) || ids.has(id)) {
+      omissions.push(team.abbreviation + ' ' + (name ?? id) + ' · incomplete or duplicate record');
+      continue;
+    }
+    ids.add(id);
+    const weight = typeof athlete.weight === 'number' && athlete.weight > 0 ? athlete.weight * 0.45359237 : undefined;
+    const height = inches * 0.0254;
+    const season = linesFor(id, name);
+    const position = playerPosition(athlete.position, height, season);
+    const playerGrade = gradeNbaPlayer(position, season, age);
+    const number = Number(athlete.jersey);
+    roster.push({
+      id: 'nba-' + id, name, number: Number.isInteger(number) && number >= 0 && number <= 99 ? number : 0,
+      age, height, weight, position, overall: playerGrade.overall, potential: playerGrade.potential,
+      ratings: { ...playerGrade.ratings, strength: estimateStrength(height, weight) }, gradeEvidence: playerGrade.evidence,
+      salary: athlete.salary, years: athlete.yearsRemaining,
+    });
+  }
+  const color = team.color && /^[0-9a-f]{6}$/i.test(team.color) ? '#' + team.color : '#17408b';
+  return { id: team.abbreviation.toLowerCase(), city: team.location, name: team.name, abbreviation: team.abbreviation,
+    conference, color, accent: '#efeadf', roster: startersFirst(roster) };
+}
+
+/** The checked-in snapshot makes all teams selectable in a fresh browser without external fetches. */
+export async function loadNbaRosters(): Promise<RosterPack> {
+  const ids = new Set<string>();
+  const omissions: string[] = [];
+  const teams = teamsData.map(team => convertRoster(team, ids, omissions));
+  return validateRoster({ version: 1, source, updatedAt: stats.snapshotDate, modelVersion: NBA_MODEL_VERSION, teams, omissions });
 }

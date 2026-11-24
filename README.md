@@ -37,3 +37,7 @@ npm run build
 ```
 
 [Architecture, contributors, and release status](docs/architecture.md)
+
+## NBA data
+
+The roster includes 30 teams and 529 players. ESPN supplies player bios and reported contracts. BoxScore Lab season totals through November 23, 2026 are used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The game converts the season totals into its own ratings. The player card explains how each stat contributes. Strength, potential, and abilities without tracking data are estimated. [BoxScore Lab downloads](https://www.boxscorelab.com/downloads/)

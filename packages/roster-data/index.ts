@@ -91,6 +91,7 @@ export function validateRoster(input: unknown): RosterPack {
           !within(player.number, 0, 99) || !within(player.age, 16, 60) || !within(player.height, 1.35, 2.55) ||
           !within(player.overall, 25, 99) || !within(player.potential, 25, 99) ||
           !player.ratings || !ratingKeys.every(key => within(player.ratings[key], 25, 99)) ||
+          (player.wingspan !== undefined && !within(player.wingspan, 1.4, 2.8)) ||
           (player.weight !== undefined && !within(player.weight, 45, 190)) ||
           (player.ratings.strength !== undefined && !within(player.ratings.strength, 25, 99)) ||
           (player.salary !== undefined && !within(player.salary, 0, 200_000_000)) ||
@@ -146,7 +147,7 @@ export function parseRosterCsv(csv: string, source: string, updatedAt: string): 
     if (team.name !== fields.teamName || team.conference !== fields.conference) throw new Error('Conflicting metadata for team ' + team.id);
     const player: Player = {
       id: fields.playerId, name: fields.playerName, number: number('number'), position: fields.position as Position,
-      height: number('height'), weight: fields.weight ? number('weight') : undefined, age: number('age'), overall: number('overall'), potential: number('potential'),
+      height: number('height'), weight: fields.weight ? number('weight') : undefined, wingspan: fields.wingspan ? number('wingspan') : undefined, age: number('age'), overall: number('overall'), potential: number('potential'),
       salary: fields.salary ? number('salary') : undefined, years: fields.years ? number('years') : undefined,
       ratings: { ...Object.fromEntries(ratingKeys.map(key => [key, number(key)])), ...(fields.strength ? { strength: number('strength') } : {}) } as Ratings,
     };

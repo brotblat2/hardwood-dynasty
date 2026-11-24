@@ -8,7 +8,7 @@ export type Ratings = {
   rebounding: number; speed: number; perimeter: number; interior: number; iq: number; durability: number; strength?: number;
 };
 export type Player = {
-  id: string; name: string; number: number; position: Position; height: number; weight?: number; age: number;
+  id: string; name: string; number: number; position: Position; height: number; weight?: number; wingspan?: number; age: number;
   appearance?: { portraitUrl?: string; skinTone?: string; hairTone?: string; hairstyle?: 'buzz' | 'fade' | 'curls' | 'braids' | 'shaved' };
   overall: number; potential: number; gradeEvidence?: 'established' | 'limited' | 'estimated'; ratings: Ratings; salary?: number; years?: number;
 };
@@ -28,7 +28,7 @@ export type GamePlayer = {
 };
 export type Ball = {
   position: Vec3; velocity: Vec3; ownerId: string | null;
-  kind: 'held' | 'loose' | 'pass' | 'shot';
+  kind: 'held' | 'loose' | 'pass' | 'shot'; spin?: Vec3; dribbleHand?: -1 | 1;
 };
 export type GameEvent = {
   tick: number; type: 'shot' | 'score' | 'miss' | 'pass' | 'assist' | 'steal' | 'block' | 'rebound' | 'turnover' | 'foul' | 'period' | 'timeout' | 'substitution';

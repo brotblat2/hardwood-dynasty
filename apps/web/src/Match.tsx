@@ -8,6 +8,7 @@ import { createRenderer } from '../../../packages/rendering/index.ts';
 import { TouchControls, useControls, KEYBOARD_HINTS } from '../../../packages/controls/index.tsx';
 import type { KeyboardBindings } from '../../../packages/controls/index.tsx';
 import { createRoomClient } from '../../../packages/multiplayer/index.ts';
+import { createCourtAudio } from './court-audio.ts';
 import { summarizeGame } from '../../../packages/analytics/index.ts';
 
 export type Camera = 'broadcast' | 'baseline' | 'courtside' | 'player' | 'cinematic';
@@ -16,7 +17,7 @@ export type MatchSetup = {
   online?: { url: string; code?: string; resume?: boolean };
 };
 type MatchProps = {
-  setup: MatchSetup; camera: Camera; quality: 'low' | 'high'; bindings?: KeyboardBindings; onExit(): void;
+  setup: MatchSetup; camera: Camera; quality: 'auto' | 'low' | 'high'; bindings?: KeyboardBindings; mute?: boolean; onExit(): void;
   onResult?(state: GameState): void; onSnapshot?(state: GameState): void;
 };
 
@@ -27,7 +28,7 @@ const time = (seconds: number) => {
 const initialSelection = (state: GameState, side: Side, locked?: string) =>
   state.players.find(player => player.id === locked)?.id ?? state.players.find(player => player.side === side)?.id ?? '';
 
-export function Match({ setup, camera, quality, bindings, onExit, onResult, onSnapshot }: MatchProps) {
+export function Match({ setup, camera, quality, bindings, mute, onExit, onResult, onSnapshot }: MatchProps) {
   const stage = useRef<HTMLDivElement>(null);
   const engine = useRef<ReturnType<typeof createEngine> | null>(null);
   const renderer = useRef<ReturnType<typeof createRenderer> | null>(null);
@@ -74,14 +75,22 @@ export function Match({ setup, camera, quality, bindings, onExit, onResult, onSn
       resetSelection(latest.current);
       setHud(latest.current);
     }
+    const graphicsQuality = quality === 'auto'
+      ? matchMedia('(pointer: coarse)').matches || navigator.hardwareConcurrency < 5 ? 'low' : 'high'
+      : quality;
     try {
-      renderer.current = createRenderer(container, { quality, camera });
+      renderer.current = createRenderer(container, { quality: graphicsQuality, camera });
       if (latest.current) renderer.current.draw(latest.current, selected.current);
     } catch {
       setError('This browser could not start the 3D court. Try enabling hardware acceleration or opening the game in another browser.');
       return;
     }
     container.focus();
+    const audio = mute ? undefined : createCourtAudio();
+    if (audio) {
+      window.addEventListener('keydown', audio.start, { passive: true });
+      window.addEventListener('pointerdown', audio.start, { passive: true });
+    }
     const coach = createCoach();
     if (setup.online) {
       const online = setup.online;
@@ -138,9 +147,23 @@ export function Match({ setup, camera, quality, bindings, onExit, onResult, onSn
     let last = performance.now();
     let lastHud = 0;
     let lastSave = 0;
+    let measuredFrames = 0;
+    let slowFrames = 0;
+    let qualityAdjusted = false;
     let residual = 0;
     const tickMs = 1000 / TICK_RATE;
     const loop = (now: number) => {
+      if (!document.hidden && quality === 'auto' && graphicsQuality === 'high' && !qualityAdjusted) {
+        const frameMs = now - last;
+        if (frameMs > 0 && frameMs < 150) {
+          measuredFrames++;
+          if (frameMs > 25) slowFrames++;
+        }
+        if (measuredFrames === 90) {
+          if (slowFrames > 27) renderer.current?.setQuality('low');
+          qualityAdjusted = true;
+        }
+      }
       const local = engine.current;
       let state = latest.current;
       if (local && !pausedRef.current && local.state.phase !== 'final') {
@@ -167,6 +190,7 @@ export function Match({ setup, camera, quality, bindings, onExit, onResult, onSn
       last = now;
       if (state) {
         renderer.current?.draw(state, selected.current);
+        if (!pausedRef.current) audio?.update(state, selected.current);
         if (now - lastHud >= 70 || (state.phase === 'final' && !delivered.current)) {
           setHud({ ...state, ball: { ...state.ball }, charge: { ...state.charge }, score: [...state.score] });
           setSelection(selected.current);
@@ -183,12 +207,17 @@ export function Match({ setup, camera, quality, bindings, onExit, onResult, onSn
     frame = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(frame);
+      if (audio) {
+        window.removeEventListener('keydown', audio.start);
+        window.removeEventListener('pointerdown', audio.start);
+        audio.dispose();
+      }
       client.current?.close(false);
       client.current = null;
       renderer.current?.dispose();
       renderer.current = null;
     };
-  }, [setup, quality, camera]);
+  }, [setup, quality, camera, mute]);
 
   useEffect(() => renderer.current?.setCamera(cameraMode), [cameraMode]);
   useEffect(() => {

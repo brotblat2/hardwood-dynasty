@@ -1,5 +1,5 @@
 import { attackSign, COURT, TICK_RATE } from '../contracts/index.ts';
-import type { Control, Engine, GameConfig, GameEvent, GamePlayer, GameState, Side, Team, Vec2, Vec3 } from '../contracts/index.ts';
+import type { Control, Engine, GameConfig, GameEvent, GamePlayer, GameState, Player, Side, Team, Vec2, Vec3 } from '../contracts/index.ts';
 
 const DT = 1 / TICK_RATE;
 export const IDEAL_RELEASE = 0.62;
@@ -32,6 +32,24 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     { teams, config: settings, tick: 0, period: 1, clock: settings.periodSeconds, shotClock: 24, phase: 'live', score: [0, 0], possession: 0,
       players: [], ball: { position: at(0, 1, 0), velocity: at(0, 0, 0), kind: 'held', ownerId: null }, charge: {}, events: [], simulation: runtime };
   const sim = state.simulation;
+  type Body = { height: number; mass: number; strength: number; reach: number; leverage: number; acceleration: number };
+  const bodies = new WeakMap<Player, Body>();
+  function body(p: GamePlayer): Body {
+    const profile = p.profile as Player & { weight?: number; ratings: Player['ratings'] & { strength?: number } };
+    const cached = bodies.get(profile);
+    if (cached) return cached;
+    const positionIndex = ['PG', 'SG', 'SF', 'PF', 'C'].indexOf(profile.position);
+    const typicalHeight = 1.88 + positionIndex * 0.055;
+    const height = clamp(Number.isFinite(profile.height) && profile.height > 0 ? profile.height : typicalHeight, 1.55, 2.36);
+    const typicalMass = (23.8 + positionIndex * 0.66) * height * height;
+    const mass = clamp(Number.isFinite(profile.weight) && profile.weight! > 0 ? profile.weight! : typicalMass, 55, 165);
+    const strength = clamp(Number.isFinite(profile.ratings.strength) ? profile.ratings.strength! : 55 + positionIndex * 6 + (mass - typicalMass) * 0.15, 25, 99);
+    const result = { height, mass, strength, reach: height * 1.26,
+      leverage: (mass / 95) ** 0.72 * (0.6 + strength / 155),
+      acceleration: clamp(0.23 * (95 / mass) ** 0.42 * (0.92 + strength / 850), 0.17, 0.285) };
+    bodies.set(profile, result);
+    return result;
+  }
   function random() {
     sim.seed = (Math.imul(sim.seed, 1664525) + 1013904223) >>> 0;
     return sim.seed / 4294967296;
@@ -107,9 +125,10 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const owner = state.ball.ownerId === p.id;
     const charge = owner && (cmd?.shoot || state.charge[p.id]);
     const speed = (3.5 + p.profile.ratings.speed * 0.024) * (sprint ? 1.46 : 1) * (owner ? 0.94 : 1) * (charge ? 0.24 : cmd?.screen ? 0.12 : 1);
-    p.stamina = clamp(p.stamina + DT * (sprint ? -7 : 3.6), 0, 100);
-    p.velocity.x += (dx / Math.max(1, norm) * speed - p.velocity.x) * 0.23;
-    p.velocity.z += (dz / Math.max(1, norm) * speed - p.velocity.z) * 0.23;
+    const physique = body(p);
+    p.stamina = clamp(p.stamina + DT * (sprint ? -7 * (physique.mass / 95) ** 0.3 : 3.6), 0, 100);
+    p.velocity.x += (dx / Math.max(1, norm) * speed - p.velocity.x) * physique.acceleration;
+    p.velocity.z += (dz / Math.max(1, norm) * speed - p.velocity.z) * physique.acceleration;
     p.position.x = clamp(p.position.x + p.velocity.x * DT, half ? 0.32 : -LIMIT_X, LIMIT_X);
     p.position.z = clamp(p.position.z + p.velocity.z * DT, -LIMIT_Z, LIMIT_Z);
     if (norm > 0.08) p.facing = Math.atan2(dz, dx);
@@ -128,9 +147,13 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       b.position.x = clamp(b.position.x - dx * rest, half ? 0.32 : -LIMIT_X, LIMIT_X); b.position.z = clamp(b.position.z - dz * rest, -LIMIT_Z, LIMIT_Z);
     }
   }
-  function pusher(a: GamePlayer, b: GamePlayer) { return a.pose === 'screen' ? 0.1 : b.pose === 'screen' ? 0.9 : 0.5; }
+  function pusher(a: GamePlayer, b: GamePlayer) {
+    const leverage = (p: GamePlayer) => body(p).leverage * (p.pose === 'screen' ? 3.2 : 1);
+    const aHold = leverage(a), bHold = leverage(b);
+    return bHold / (aHold + bHold);
+  }
   function launch(p: GamePlayer, end: Vec3, duration: number, kind: 'shot' | 'pass', flight: Flight) {
-    const start = at(p.position.x, kind === 'shot' ? p.profile.height + 0.4 : 1.45, p.position.z);
+    const start = at(p.position.x, kind === 'shot' ? body(p).reach - 0.08 : 1.45, p.position.z);
     state.ball = { kind, ownerId: null, position: start, velocity: at((end.x - start.x) / duration, (end.y - start.y) / duration + G * duration / 2, (end.z - start.z) / duration) };
     sim.flight = flight;
     state.charge[p.id] = 0;
@@ -169,10 +192,17 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const range = distance(p.position, rim);
     const defenders = state.players.filter(q => q.side !== p.side);
     const closest = defenders.reduce<GamePlayer | undefined>((a, q) => !a || distance(p.position, q.position) < distance(p.position, a.position) ? q : a, undefined);
-    const pressure = defenders.reduce((max, q) => Math.max(max, clamp(1 - distance(q.position, p.position) / 2.3, 0, 1) * (controls[q.id]?.contest ? 0.54 : 0.16)), 0);
+    const reachAdvantage = (q: GamePlayer) => clamp(body(q).reach - body(p).reach, -0.65, 0.65);
+    const pressure = defenders.reduce((max, q) => {
+      const advantage = reachAdvantage(q);
+      const proximity = clamp(1 - distance(q.position, p.position) / (2.3 + advantage * 0.55), 0, 1);
+      return Math.max(max, proximity * (controls[q.id]?.contest ? 0.54 + advantage * 0.3 : 0.16 + advantage * 0.09));
+    }, 0);
+    const contact = range < 3.2 && closest ? clamp(1 - distance(closest.position, p.position) / 1.55, 0, 1) : 0;
+    const postAdvantage = closest ? clamp(body(p).leverage - body(closest).leverage, -0.8, 0.8) * contact * 0.24 : 0;
     const precision = clamp(1 - Math.abs(charge - IDEAL_RELEASE) / 0.5, 0, 1);
     const rating = range < 3.2 ? p.profile.ratings.finishing : p.profile.ratings.shooting;
-    const chance = clamp(0.3 + rating * 0.004 + precision * 0.38 - range * 0.023 - pressure - (100 - p.stamina) * 0.001, 0.025, 0.98);
+    const chance = clamp(0.3 + rating * 0.004 + precision * 0.38 - range * 0.023 - pressure + postAdvantage - (100 - p.stamina) * 0.001, 0.025, 0.98);
     const three = range >= COURT.three || (Math.abs(p.position.z) >= 6.7 && p.position.x * sign(p.side) >= COURT.rimX - 2.7);
     const streetScoring = (settings as GameConfig & { scoring?: { inside: number; outside: number } }).scoring;
     const streetValue = three ? streetScoring?.outside ?? 2 : streetScoring?.inside ?? 1;
@@ -181,7 +211,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     const requested = (controls[p.id] as TacticalControl | undefined)?.shotType;
     const backwards = (controls[p.id]?.move.x ?? 0) * sign(p.side) < -0.55;
     const inside = range < 2.3;
-    const style = requested ?? (inside ? (p.profile.height >= 1.92 && controls[p.id]?.sprint ? 'dunk' : 'layup') :
+    const style = requested ?? (inside ? (body(p).height >= 1.92 && controls[p.id]?.sprint ? 'dunk' : 'layup') :
       backwards ? 'fadeaway' : range < 4.4 && (p.profile.position === 'PF' || p.profile.position === 'C') ? 'hook' : range < 4.4 ? 'floater' : 'jump');
     const type = ({ dunk: inside ? 'Dunk' : 'Jump shot', layup: inside ? 'Layup' : 'Floater', floater: 'Floater', hook: 'Hook', fadeaway: 'Fadeaway', jump: 'Jump shot' })[style];
     if (type === 'Fadeaway') p.velocity.x -= sign(p.side) * 1.5;
@@ -191,7 +221,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       startFree(p, points); return;
     }
     event('shot', p.side, p, { points, detail: type + ' · ' + timing });
-    if (closest && controls[closest.id]?.contest && distance(closest.position, p.position) < 1.12 && random() < 0.12 + closest.profile.ratings.interior * 0.002) {
+    if (closest && controls[closest.id]?.contest && distance(closest.position, p.position) < 1.12 + reachAdvantage(closest) * 0.42 && random() < clamp(0.12 + closest.profile.ratings.interior * 0.002 + reachAdvantage(closest) * 0.45, 0.04, 0.58)) {
       event('block', closest.side, closest);
       state.ball = { ownerId: null, position: at(p.position.x, 2.2, p.position.z), velocity: at(-sign(p.side) * 2.8, 2, (random() - 0.5) * 4), kind: 'loose' };
       sim.flight = null; state.charge[p.id] = 0; sim.rimTouched = false; return;
@@ -262,7 +292,7 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
     if (ball.kind === 'pass' && f && shooter) {
       const receiver = state.players.find(q => q.id === f.target);
       for (const q of state.players) {
-        if (q.side === shooter.side || f.age < 0.09 || ball.position.y > q.profile.height + 0.45 || distance(q.position, ball.position) > (controls[q.id]?.steal ? 1.03 : 0.39)) continue;
+        if (q.side === shooter.side || f.age < 0.09 || ball.position.y > body(q).reach || distance(q.position, ball.position) > (controls[q.id]?.steal ? 1.03 : 0.39)) continue;
         event('steal', q.side, q, { detail: 'Intercepted pass' }); event('turnover', shooter.side, shooter); hold(q); return;
       }
       if (receiver && f.age > f.duration * 0.35 && distance(receiver.position, ball.position) < 1.25 && ball.position.y < 2.6) {
@@ -287,8 +317,20 @@ export function createEngine(teams: [Team, Team], config: GameConfig = {}, initi
       event('turnover', state.possession, undefined, { detail: 'Out of bounds' }); dead(opposite(state.possession)); return;
     }
     if (ball.position.y < 0.13) { ball.position.y = 0.13; ball.velocity.y = Math.abs(ball.velocity.y) * 0.5; ball.velocity.x *= 0.76; ball.velocity.z *= 0.76; }
-    const contender = state.players.filter(p => distance(p.position, ball.position) <= 1.02 && ball.position.y < p.profile.height + (controls[p.id]?.contest ? 0.68 : 0.24))
-      .sort((a, b) => distance(a.position, ball.position) - distance(b.position, ball.position) - (a.profile.ratings.rebounding - b.profile.ratings.rebounding) * 0.005)[0];
+    const rim = { x: sign(state.possession) * COURT.rimX, z: 0 };
+    function reboundPriority(p: GamePlayer) {
+      const physique = body(p);
+      const position = distance(p.position, ball.position);
+      const braced = p.pose === 'screen' || p.pose === 'contest';
+      // Inside position lets a player use their body to keep a nearby opponent off the glass.
+      const boxOut = sim.rimTouched && braced && state.players.some(q =>
+        q.side !== p.side && distance(p.position, q.position) < 1.35 && distance(p.position, rim) < distance(q.position, rim));
+      return position - p.profile.ratings.rebounding * 0.005 - (physique.reach - 2.45) * 0.24 -
+        (boxOut ? 0.23 * physique.leverage : 0);
+    }
+    const contender = state.players.filter(p => distance(p.position, ball.position) <= 1.02 + (body(p).reach - 2.45) * 0.24 &&
+      ball.position.y < body(p).reach + (controls[p.id]?.contest ? 0.31 : -0.16))
+      .sort((a, b) => reboundPriority(a) - reboundPriority(b))[0];
     if (contender) {
       if (sim.rimTouched) { event('rebound', contender.side, contender); if (contender.side === state.possession) state.shotClock = 14; }
       sim.rimTouched = false; sim.lastPass = null; hold(contender);

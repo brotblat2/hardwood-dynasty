@@ -300,7 +300,8 @@ export function createRenderer(container: HTMLElement, options: RendererOptions 
       const greenPulse = state.shotFeedback?.green && state.shotFeedback.playerId === player.id && state.tick - state.shotFeedback.tick >= 0 && state.tick - state.shotFeedback.tick < 36
         ? 1 - (state.tick - state.shotFeedback.tick) / 36
         : 0;
-      actor.animate(player, state.tick, hasBall ? state.ball.position : undefined, selectedId === player.id, state.charge[player.id] ?? 0, events.get(player.id), greenPulse);
+      const meterInfo = state.shotMeter?.playerId === player.id ? state.shotMeter : null;
+      actor.animate(player, state.tick, hasBall ? state.ball.position : undefined, selectedId === player.id, state.charge[player.id] ?? 0, events.get(player.id), greenPulse, meterInfo);
       projectedFeet.set(player.position.x, 0.05, player.position.z).project(perspective);
       projectedHead.set(player.position.x, 2, player.position.z).project(perspective);
       if (projectedFeet.z >= -1 && projectedFeet.z <= 1) {

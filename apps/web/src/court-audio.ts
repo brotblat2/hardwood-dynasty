@@ -1,6 +1,6 @@
 import type { GameState } from '../../../packages/contracts/index.ts';
 
-type Sound = 'bounce' | 'squeak' | 'rim' | 'whistle' | 'net' | 'crowd' | 'buzzer' | 'block' | 'dunk' | 'green' | 'hardDribble' | 'clamp' | 'ankleBreaker' | 'flyBy';
+type Sound = 'bounce' | 'squeak' | 'rim' | 'whistle' | 'net' | 'crowd' | 'buzzer' | 'block' | 'dunk' | 'green' | 'hardDribble' | 'clamp' | 'ankleBreaker' | 'flyBy' | 'deflect' | 'passSnap';
 
 export function createCourtAudio() {
   let context: AudioContext | undefined;
@@ -158,6 +158,34 @@ export function createCourtAudio() {
       src.stop(when + 0.22);
       return;
     }
+    if (sound === 'deflect' || sound === 'passSnap') {
+      const dur = sound === 'deflect' ? 0.08 : 0.06;
+      const out = ctx.createGain();
+      out.gain.setValueAtTime(0.0001, when);
+      out.gain.exponentialRampToValueAtTime((sound === 'deflect' ? 0.11 : 0.065) * gain, when + 0.006);
+      out.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      out.connect(ctx.destination);
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(sound === 'deflect' ? 1850 : 1600, when);
+      filter.frequency.exponentialRampToValueAtTime(900, when + dur);
+      filter.Q.value = 1.8;
+      src.connect(filter).connect(out);
+      src.start(when, Math.random() * 0.25);
+      src.stop(when + dur);
+      if (sound === 'deflect') {
+        const thump = ctx.createOscillator();
+        thump.type = 'triangle';
+        thump.frequency.setValueAtTime(210, when);
+        thump.frequency.exponentialRampToValueAtTime(85, when + dur);
+        thump.connect(out);
+        thump.start(when);
+        thump.stop(when + dur);
+      }
+      return;
+    }
     const length = sound === 'crowd' ? 0.95 : sound === 'whistle' ? 0.28 : sound === 'net' ? 0.16 : sound === 'block' ? 0.09 : 0.12;
     const out = ctx.createGain();
     const level = ({ bounce: 0.11, squeak: 0.044, rim: 0.075, whistle: 0.06, net: 0.11, crowd: 0.13, block: 0.11 } as const)[sound] * gain;
@@ -194,7 +222,8 @@ export function createCourtAudio() {
     priorTick = state.tick;
     for (; events < state.events.length; events++) {
       const event = state.events[events];
-      if (event.type === 'shot') dunkPending = !!event.detail?.startsWith('Dunk') || !!event.detail?.startsWith('Alley-oop');
+      if (event.type === 'shot') dunkPending = !!event.detail?.startsWith('Dunk') || !!event.detail?.startsWith('Contact dunk') || !!event.detail?.startsWith('Alley-oop');
+      if (event.type === 'pass') play('passSnap', event.detail === 'flashy' ? 0.72 : 0.45);
       if (event.type === 'score') {
         if (dunkPending) { play('dunk'); dunkPending = false; }
         play('net');
@@ -217,6 +246,13 @@ export function createCourtAudio() {
       if (state.callout.text === 'ANKLE BREAKER!') play('ankleBreaker');
       else if (state.callout.text === 'CLAMPED!') play('clamp');
       else if (state.callout.text === 'FLY-BY!') play('flyBy');
+      else if (state.callout.text === 'ALLEY-OOP!') play('crowd', 0.65);
+      else if (
+        state.callout.text === 'DEFLECTED!' ||
+        state.callout.text === 'TIPPED!' ||
+        state.callout.text === 'BUMP LOOSE!' ||
+        state.callout.text === 'POKE LOOSE!'
+      ) play('deflect', 0.9);
     }
     const owner = state.ball.ownerId ? state.players.find(p => p.id === state.ball.ownerId) : undefined;
     const activeMove = owner?.action?.dribbleMove;

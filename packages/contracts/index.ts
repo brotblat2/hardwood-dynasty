@@ -26,10 +26,12 @@ export type Team = {
   tertiaryColor?: string; jerseyPattern?: JerseyPattern;
   conference: 'East' | 'West'; roster: Player[];
 };
-export type OffensePlay = 'motion' | 'pickAndRoll' | 'iso' | 'fiveOut';
+export type OffensePlay = 'motion' | 'pickAndRoll' | 'iso' | 'fiveOut' | 'floppy';
 export type DefenseScheme = 'man' | 'zone23' | 'switch' | 'press';
-export type ShotType = 'jump' | 'layup' | 'dunk' | 'floater' | 'hook' | 'fadeaway' | 'stepBack' | 'euro';
-export type DribbleMove = 'crossover' | 'betweenLegs' | 'behindBack' | 'hesitation' | 'spin' | 'stepBack' | 'inAndOut' | 'jab';
+export type ScreenMode = 'roll' | 'fade';
+export type ShotType = 'jump' | 'pullUp' | 'layup' | 'reverseLayup' | 'dunk' | 'contactDunk' | 'floater' | 'hook' | 'fadeaway' | 'stepBack' | 'euro';
+export type PassType = 'chest' | 'bounce' | 'lob' | 'flashy';
+export type DribbleMove = 'crossover' | 'betweenLegs' | 'behindBack' | 'hesitation' | 'spin' | 'stepBack' | 'snatchBack' | 'inAndOut' | 'jab';
 export type BallState = 'tripleThreat' | 'live' | 'dead';
 export type BodyUpKind = 'clamp' | 'ride' | 'blowby';
 export type PlayerAction = {
@@ -37,9 +39,14 @@ export type PlayerAction = {
   moveProgress?: number;
   moveDir?: -1 | 1;
   ballState?: BallState;
+  ballHand?: -1 | 1;
+  protectBall?: boolean;
   adrenaline?: number;
   bodyUp?: BodyUpKind;
   intenseD?: boolean;
+  handsUp?: boolean;
+  boxOut?: boolean;
+  passStyle?: PassType;
   stumble?: number;
   flyBy?: number;
   shotStyle?: ShotType;
@@ -50,11 +57,20 @@ export type PlayerAction = {
   hotStreak?: number;
 };
 export type ShotTimingGrade = 'Green' | 'Excellent' | 'Slightly Early' | 'Slightly Late' | 'Early' | 'Late';
-export type ContestLevel = 'Open' | 'Light' | 'Tight' | 'Smothered';
+export type ContestLevel = 'Wide Open' | 'Open' | 'Light' | 'Tight' | 'Smothered';
 export type ShotFeedback = {
   playerId: string; tick: number; timing: ShotTimingGrade; contest: ContestLevel;
   style: string; grade: number; green?: boolean; bank?: boolean;
   contestPct?: number; rhythm?: boolean; greenWindow?: number;
+};
+export type ShotMeterState = {
+  playerId: string;
+  progress: number;
+  ideal: number;
+  maxCharge: number;
+  greenWindow: number;
+  contestLevel: ContestLevel;
+  style: ShotType;
 };
 export type GameCallout = {
   tick: number; text: string; tone: 'gold' | 'green' | 'blue' | 'red'; playerId?: string;
@@ -62,12 +78,12 @@ export type GameCallout = {
 export type FreeThrowState = { shooterId: string; remaining: number; total: number; andOne?: boolean };
 export type Control = {
   move: Vec2; sprint?: boolean; shoot?: boolean; pass?: boolean; targetId?: string;
-  passType?: 'chest' | 'bounce' | 'lob'; contest?: boolean; steal?: boolean;
+  passType?: PassType; contest?: boolean; handsUp?: boolean; steal?: boolean;
   screen?: boolean; dribble?: boolean; timeout?: boolean; substituteId?: string;
   shotType?: ShotType;
   pumpFake?: boolean; callScreen?: boolean; callPass?: boolean;
   intenseD?: boolean; postUp?: boolean; dribbleDir?: Vec2;
-  offensePlay?: OffensePlay; defenseScheme?: DefenseScheme;
+  offensePlay?: OffensePlay; defenseScheme?: DefenseScheme; screenMode?: ScreenMode;
 };
 export type GamePlayer = {
   id: string; side: Side; profile: Player; position: Vec2; velocity: Vec2; facing: number;
@@ -94,8 +110,10 @@ export type GameState = {
   phase: 'live' | 'dead' | 'final'; events: GameEvent[];
   config: GameConfig; charge: Record<string, number>;
   teamFouls?: [number, number]; freeThrow?: FreeThrowState | null; shotFeedback?: ShotFeedback | null;
+  shotMeter?: ShotMeterState | null;
   callout?: GameCallout | null;
   offensePlay?: [OffensePlay, OffensePlay]; defenseScheme?: [DefenseScheme, DefenseScheme];
+  screenMode?: [ScreenMode, ScreenMode];
 };
 export interface Engine {
   readonly state: GameState;

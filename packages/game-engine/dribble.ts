@@ -1,45 +1,9 @@
 import type { BallState, DribbleMove, GamePlayer, Vec2, Vec3 } from '../contracts/index.ts';
-import { BALL_RADIUS, vector as at } from './ball.ts';
+import { BALL_RADIUS, vector as at } from './physics-ball.ts';
+import { clamp, distance } from './types.ts';
+import type { ActiveMove, DribbleRuntime, MoveSpec, PlayerBody } from './types.ts';
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const distance = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.z - b.z);
-
-export type PlayerBody = {
-  height: number;
-  mass: number;
-  wingspan: number;
-  reach: number;
-  leverage: number;
-  acceleration: number;
-};
-
-export type ActiveMove = {
-  type: DribbleMove;
-  started: number;
-  duration: number;
-  fromHand: -1 | 1;
-  toHand: -1 | 1;
-  dir: -1 | 1;
-  launchAt: number;
-  peakSpeed: number;
-};
-
-export type DribbleRuntime = {
-  ownerId: string;
-  hand: -1 | 1;
-  phase: number;
-  lastTick: number;
-  held: boolean;
-  ballState: BallState;
-  adrenaline: number;
-  comboCount: number;
-  lastMoveTick: number;
-  lastMoveType?: DribbleMove;
-  clampHits: number;
-  clampWindowUntil: number;
-  move?: ActiveMove;
-  crossover?: { traveled: number; floorAt: number };
-};
+export type { ActiveMove, DribbleRuntime, MoveSpec, PlayerBody } from './types.ts';
 
 export function createDribbleRuntime(ownerId: string, tick: number, initialHand: -1 | 1 = 1): DribbleRuntime {
   return {
@@ -54,6 +18,7 @@ export function createDribbleRuntime(ownerId: string, tick: number, initialHand:
     lastMoveTick: -999,
     clampHits: 0,
     clampWindowUntil: 0,
+    protectBall: false,
   };
 }
 
@@ -63,15 +28,31 @@ export function localBallPoint(p: GamePlayer, forward: number, side: number, hei
   return at(p.position.x + fx * forward + fz * side, height, p.position.z + fz * forward - fx * side);
 }
 
-export type MoveSpec = {
-  type: DribbleMove;
-  dir: -1 | 1;
-  toHand: -1 | 1;
-  duration: number;
-  launchAt: number;
-  staminaCost: number;
-  impulse: Vec2;
-};
+/** Progress in [0, 1] of the currently executing dribble animation, if any. */
+export function moveProgress(move: ActiveMove | undefined, tick: number): number {
+  if (!move) return 1;
+  return clamp((tick - move.started) / Math.max(1, move.duration), 0, 1);
+}
+
+/** Whether the handler can branch out of the current dribble move into another move or shot gather. */
+export function canCancelMove(dribble: DribbleRuntime | undefined, tick: number): boolean {
+  if (!dribble?.move) return true;
+  return moveProgress(dribble.move, tick) >= dribble.move.cancelAfter;
+}
+
+/** Whether the handler has passed the launch frame of a dribble move and can burst into a drive. */
+export function canLaunchOutOfMove(dribble: DribbleRuntime | undefined, tick: number): boolean {
+  if (!dribble?.move) return true;
+  return moveProgress(dribble.move, tick) >= dribble.move.launchAt;
+}
+
+/** Commit ball-hand ownership cleanly when branching or canceling mid-move. */
+export function commitMoveHand(dribble: DribbleRuntime, tick: number): void {
+  if (!dribble.move) return;
+  const prog = moveProgress(dribble.move, tick);
+  dribble.hand = prog >= 0.44 ? dribble.move.toHand : dribble.move.fromHand;
+  delete dribble.move;
+}
 
 export function selectDribbleMove(
   p: GamePlayer,
@@ -85,10 +66,18 @@ export function selectDribbleMove(
   const fx = Math.cos(p.facing);
   const fz = Math.sin(p.facing);
   const forward = moveDir.x * attackSign;
+  const velForward = p.velocity.x * attackSign;
   const localSide = fz * moveDir.x - fx * moveDir.z;
   const defDist = nearestDef ? distance(nearestDef.position, p.position) : 99;
   const speed = Math.hypot(p.velocity.x, p.velocity.z);
-  const adMult = dribble.adrenaline > 0 ? 1 : 0.94;
+
+  const fatigueRatio = p.stamina < 35 ? clamp(1 - p.stamina / 35, 0, 1) : 0;
+  const adImpulse = dribble.adrenaline > 0 ? 1 : 0.91;
+  const fatigueImpulse = 1 - fatigueRatio * 0.24;
+  const burstMult = adImpulse * fatigueImpulse;
+  const durMult = 1 + fatigueRatio * 0.28 + (dribble.adrenaline === 0 ? 0.08 : 0);
+  const scaleDur = (base: number) => Math.max(10, Math.round(base * durMult));
+
   const sideFallback: -1 | 1 = Math.abs(localSide) > 0.12 ? (localSide >= 0 ? 1 : -1) : (-dribble.hand as -1 | 1);
   const latUnitX = inputMag > 0.15 ? moveDir.x / inputMag : fz * sideFallback;
   const latUnitZ = inputMag > 0.15 ? moveDir.z / inputMag : -fx * sideFallback;
@@ -99,34 +88,49 @@ export function selectDribbleMove(
       dir: dribble.hand,
       toHand: dribble.hand,
       duration: 18,
-      launchAt: 0.6,
+      cancelAfter: 0.50,
+      launchAt: 0.60,
       staminaCost: 1.0,
       impulse: { x: attackSign * 0.45, z: 0 },
     };
   }
 
+  // High-momentum drive pullback -> Snatch-Back; controlled/stationary pullback -> Step-Back.
   if (forward < -0.35) {
+    if (velForward > 3.6) {
+      return {
+        type: 'snatchBack',
+        dir: dribble.hand,
+        toHand: dribble.hand,
+        duration: scaleDur(19),
+        cancelAfter: 0.48,
+        launchAt: 0.66,
+        staminaCost: 2.3,
+        impulse: { x: -attackSign * 3.85 * burstMult, z: -p.velocity.z * 0.45 },
+      };
+    }
     return {
       type: 'stepBack',
       dir: dribble.hand,
       toHand: dribble.hand,
-      duration: 20,
+      duration: scaleDur(20),
+      cancelAfter: 0.50,
       launchAt: 0.72,
       staminaCost: 2.2,
-      impulse: { x: -attackSign * 3.2 * adMult, z: (p.velocity.z * -0.4) },
+      impulse: { x: -attackSign * 3.2 * burstMult, z: p.velocity.z * -0.4 },
     };
   }
 
   if (rangeToRim < 4.8 && defDist < 1.55 && forward > 0.25 && speed > 2.4) {
-    const dir: -1 | 1 = sideFallback;
     return {
       type: 'spin',
-      dir,
+      dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 22,
-      launchAt: 0.7,
+      duration: scaleDur(22),
+      cancelAfter: 0.54,
+      launchAt: 0.70,
       staminaCost: 2.4,
-      impulse: { x: attackSign * 2.3 * adMult, z: latUnitZ * 2.5 * adMult },
+      impulse: { x: attackSign * 2.3 * burstMult, z: latUnitZ * 2.5 * burstMult },
     };
   }
 
@@ -135,10 +139,11 @@ export function selectDribbleMove(
       type: 'behindBack',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 18,
+      duration: scaleDur(18),
+      cancelAfter: 0.48,
       launchAt: 0.62,
       staminaCost: 1.8,
-      impulse: { x: latUnitX * 2.8 * adMult - attackSign * 0.3, z: latUnitZ * 2.8 * adMult },
+      impulse: { x: latUnitX * 2.8 * burstMult - attackSign * 0.3, z: latUnitZ * 2.8 * burstMult },
     };
   }
 
@@ -147,10 +152,11 @@ export function selectDribbleMove(
       type: 'inAndOut',
       dir: dribble.hand,
       toHand: dribble.hand,
-      duration: 18,
+      duration: scaleDur(18),
+      cancelAfter: 0.48,
       launchAt: 0.65,
       staminaCost: 1.6,
-      impulse: { x: attackSign * 1.45 * adMult, z: latUnitZ * 2.75 * adMult },
+      impulse: { x: attackSign * 1.45 * burstMult, z: latUnitZ * 2.75 * burstMult },
     };
   }
 
@@ -159,10 +165,11 @@ export function selectDribbleMove(
       type: 'betweenLegs',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 18,
+      duration: scaleDur(18),
+      cancelAfter: 0.46,
       launchAt: 0.58,
       staminaCost: 1.8,
-      impulse: { x: attackSign * 1.2 * adMult, z: latUnitZ * 3.1 * adMult },
+      impulse: { x: attackSign * 1.2 * burstMult, z: latUnitZ * 3.1 * burstMult },
     };
   }
 
@@ -171,10 +178,11 @@ export function selectDribbleMove(
       type: 'crossover',
       dir: sideFallback,
       toHand: (-dribble.hand) as -1 | 1,
-      duration: 17,
+      duration: scaleDur(17),
+      cancelAfter: 0.46,
       launchAt: 0.55,
       staminaCost: 1.8,
-      impulse: { x: attackSign * 1.15 * adMult, z: latUnitZ * 3.1 * adMult },
+      impulse: { x: attackSign * 1.15 * burstMult, z: latUnitZ * 3.1 * burstMult },
     };
   }
 
@@ -182,10 +190,11 @@ export function selectDribbleMove(
     type: 'hesitation',
     dir: dribble.hand,
     toHand: dribble.hand,
-    duration: 18,
+    duration: scaleDur(18),
+    cancelAfter: 0.48,
     launchAt: 0.68,
     staminaCost: 1.4,
-    impulse: { x: attackSign * 1.7 * adMult, z: -fx * dribble.hand * 0.45 * adMult },
+    impulse: { x: attackSign * 1.7 * burstMult, z: -fx * dribble.hand * 0.45 * burstMult },
   };
 }
 
@@ -199,6 +208,8 @@ export function applyDribbleMove(
   attackSign: number,
   random: () => number,
 ): { stunnedDefId?: string; stumbleTicks: number; stunTicks: number; isAnkleBreaker: boolean } {
+  if (dribble.move) commitMoveHand(dribble, tick);
+
   p.stamina = Math.max(0, p.stamina - spec.staminaCost);
   if (spec.type !== 'jab') {
     dribble.ballState = 'live';
@@ -214,11 +225,18 @@ export function applyDribbleMove(
     fromHand: dribble.hand,
     toHand: spec.toHand,
     dir: spec.dir,
+    cancelAfter: spec.cancelAfter,
     launchAt: spec.launchAt,
     peakSpeed: Math.hypot(spec.impulse.x, spec.impulse.z),
   };
 
-  if (spec.type === 'stepBack') {
+  if (spec.type === 'snatchBack') {
+    // Arrest forward momentum sharply and yank backward into separation space.
+    if (p.velocity.x * attackSign > 0) p.velocity.x *= 0.22;
+    p.velocity.x += spec.impulse.x;
+    p.velocity.z += spec.impulse.z;
+  } else if (spec.type === 'stepBack') {
+    if (p.velocity.x * attackSign > 1.5) p.velocity.x *= 0.45;
     p.velocity.x += spec.impulse.x;
     p.velocity.z *= 0.55;
   } else {
@@ -235,19 +253,20 @@ export function applyDribbleMove(
   const handling = p.profile.ratings.handling;
   const perimeter = nearestDef.profile.ratings.perimeter;
   const breakChance = clamp(
-    0.16 +
-      (handling - perimeter) * 0.009 +
-      (defCommit < -0.6 ? 0.28 : 0) +
-      (spec.type === 'stepBack' && defApproaching ? 0.24 : 0) +
-      (dribble.comboCount >= 2 ? 0.08 : 0) -
+    0.09 +
+      (handling - perimeter) * 0.008 +
+      (defCommit < -1.1 ? 0.28 : defCommit < -0.6 ? 0.12 : 0) +
+      ((spec.type === 'stepBack' || spec.type === 'snatchBack') && defApproaching ? 0.22 : 0) +
+      (dribble.comboCount >= 2 ? 0.06 : 0) -
       (defIntenseD ? 0.14 : 0),
-    0.05,
-    0.72,
+    0.03,
+    0.64,
   );
   if (random() < breakChance) {
-    const stunTicks = Math.round(24 + 12 * (1 - perimeter / 100));
-    const stumbleTicks = defCommit < -0.5 || spec.type === 'stepBack' || handling >= 84 ? 34 : 20;
-    const isAnkleBreaker = stumbleTicks >= 34 && (defCommit < -0.5 || breakChance >= 0.34);
+    const stunTicks = Math.round(22 + 12 * (1 - perimeter / 100));
+    const majorBreak = handling >= 78 && (defCommit < -1.1 || ((spec.type === 'stepBack' || spec.type === 'snatchBack') && defApproaching && handling >= 82));
+    const stumbleTicks = majorBreak ? 34 : 18;
+    const isAnkleBreaker = majorBreak && (defCommit < -1.1 || breakChance >= 0.36);
     return { stunnedDefId: nearestDef.id, stumbleTicks, stunTicks, isAnkleBreaker };
   }
   return { stumbleTicks: 0, stunTicks: 0, isAnkleBreaker: false };
@@ -259,17 +278,22 @@ export function computeDribbleBallPose(
   dribble: DribbleRuntime,
   speed: number,
   tick: number,
-  nearestDefDist: number,
+  nearestDef: GamePlayer | undefined,
+  sprinting: boolean,
   dt: number,
-): { position: Vec3; velocity: Vec3; spin: Vec3; dribbleHand: -1 | 1 } {
+): { position: Vec3; velocity: Vec3; spin: Vec3; dribbleHand: -1 | 1; protectBall: boolean } {
+  const nearestDefDist = nearestDef ? distance(nearestDef.position, p.position) : 99;
+
   if (dribble.ballState === 'dead') {
+    dribble.protectBall = nearestDefDist < 1.45;
     const y = physique.height * 0.68;
-    const position = localBallPoint(p, 0.26, dribble.hand * 0.16, y);
+    const position = localBallPoint(p, 0.24, dribble.hand * 0.16, y);
     return {
       position,
       velocity: at(p.velocity.x, 0, p.velocity.z),
       spin: at(0, 0, 0),
       dribbleHand: dribble.hand,
+      protectBall: dribble.protectBall,
     };
   }
 
@@ -280,6 +304,7 @@ export function computeDribbleBallPose(
       jabThrust = Math.sin(prog * Math.PI);
       if (prog >= 1) delete dribble.move;
     }
+    dribble.protectBall = nearestDefDist < 1.4 && !jabThrust;
     const y = physique.height * (0.56 - 0.04 * jabThrust);
     const position = localBallPoint(p, 0.28 + jabThrust * 0.20, dribble.hand * (0.21 + jabThrust * 0.12), y);
     return {
@@ -287,14 +312,29 @@ export function computeDribbleBallPose(
       velocity: at(p.velocity.x, 0, p.velocity.z),
       spin: at(0, 0, 0),
       dribbleHand: dribble.hand,
+      protectBall: dribble.protectBall,
     };
   }
 
-  const tightGuard = nearestDefDist < 1.35 ? 0.12 : 0;
+  // Ball-hand awareness: check whether nearest defender crowds the current dribble hand.
+  const fx = Math.cos(p.facing);
+  const fz = Math.sin(p.facing);
+  let defOnBallSide = false;
+  if (nearestDef && nearestDefDist < 1.55) {
+    const dx = nearestDef.position.x - p.position.x;
+    const dz = nearestDef.position.z - p.position.z;
+    const defLocalSide = fz * dx - fx * dz;
+    defOnBallSide = defLocalSide * dribble.hand > 0.10;
+  }
+
   const active = dribble.move;
+  const protectBall = !active && !sprinting && nearestDefDist < 1.50 && defOnBallSide;
+  dribble.protectBall = protectBall;
+
+  const tightGuard = nearestDefDist < 1.35 ? 0.12 : 0;
   let handOffset: number = dribble.hand;
-  let forward = 0.25 + Math.min(speed, 7) * 0.032;
-  let heightScale = 0.61 - tightGuard;
+  let forward = protectBall ? 0.14 : 0.25 + Math.min(speed, 7) * 0.032;
+  let heightScale = 0.61 - tightGuard - (protectBall ? 0.05 : 0);
   let yOverride: number | undefined;
 
   if (active) {
@@ -340,6 +380,16 @@ export function computeDribbleBallPose(
         yOverride = physique.height * (0.50 + 0.16 * pocket);
       }
       forward = 0.30;
+    } else if (active.type === 'snatchBack') {
+      handOffset = active.fromHand * (1 - 0.28 * progress);
+      if (progress < 0.42) {
+        const pound = Math.abs(progress - 0.22) / 0.22;
+        yOverride = BALL_RADIUS + physique.height * 0.44 * clamp(pound * pound, 0, 1);
+      } else {
+        const pocket = (progress - 0.42) / 0.58;
+        yOverride = physique.height * (0.46 + 0.20 * pocket);
+      }
+      forward = 0.28 - 0.14 * peakSin;
     }
     if (progress >= 1) {
       dribble.hand = active.toHand;
@@ -347,17 +397,21 @@ export function computeDribbleBallPose(
     }
   }
 
-  const frequency = (1.28 + Math.min(0.45, speed * 0.075) + p.profile.ratings.handling * 0.0018) * (active ? 1.16 : 1);
+  const staminaCadence = p.stamina < 40 ? 0.72 + (p.stamina / 40) * 0.28 : 1;
+  const frequency = (1.28 + Math.min(0.45, speed * 0.075) + p.profile.ratings.handling * 0.0018) *
+    (active ? 1.16 : 1) * staminaCadence;
   dribble.phase = (dribble.phase + dt * frequency) % 1;
   const halfStroke = dribble.phase < 0.5 ? dribble.phase : dribble.phase - 1;
   const height = physique.height * heightScale - BALL_RADIUS;
   const y = yOverride ?? BALL_RADIUS + height * (1 - 4 * halfStroke ** 2);
-  const lateral = (0.25 + (physique.wingspan - 1.85) * 0.14) * handOffset;
+  const lateralScale = protectBall ? 0.20 : 0.25 + (physique.wingspan - 1.85) * 0.14;
+  const lateral = lateralScale * handOffset;
   const position = localBallPoint(p, forward, lateral, y);
   return {
     position,
     velocity: at(p.velocity.x, -8 * height * halfStroke * frequency, p.velocity.z),
     spin: at(p.velocity.z * 0.75, handOffset * 2.1, -p.velocity.x * 0.75),
     dribbleHand: handOffset < 0 ? -1 : 1,
+    protectBall,
   };
 }

@@ -405,8 +405,8 @@ function PlayerCard({ player, close }: { player: Player; close(): void }) {
 const keyboardLabels: Record<keyof KeyboardBindings, string> = {
   up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
   shoot: 'Shoot / Block / Rebound', pumpFake: 'Pump fake', pass: 'Pass / Switch (Def)', bouncePass: 'Bounce pass', lobPass: 'Lob pass',
-  iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Contest', steal: 'Steal', screen: 'Call Screen / Box Out',
-  dribble: 'Dribble / Steal (Def)', intenseD: 'Post-Up / Tight D', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
+  flashyPass: 'Flashy pass', iconPass: 'Icon pass', sprint: 'Sprint', contest: 'Jump / Block', handsUp: 'Hands-up contest', steal: 'Steal', screen: 'Call Screen / Box Out',
+  toggleScreenMode: 'Toggle Roll / Fade', dribble: 'Dribble / Steal (Def)', intenseD: 'Post-Up / Tight D', switchPlayer: 'Switch player', callPlay: 'Cycle play / defense',
 };
 export const keyName = (key: string) => key.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, 'Arrow ');
 

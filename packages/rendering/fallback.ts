@@ -473,8 +473,12 @@ export function createCanvasFallback(container: HTMLElement, options: RendererOp
         line(target, '#1725148a', ratio * 3.15, ...marker);
         line(target, '#ddffa2', ratio * 1.8, ...marker);
         if (charge > 0) {
-          const meterColor = Math.abs(charge - 0.62) < 0.065 ? '#baff93' : charge > 0.72 ? '#ff7d7c' : '#ffc763';
-          line(target, meterColor, ratio * 2.7, ...marker.slice(0, 2 + Math.floor(Math.min(1, charge / 1.2) * (steps - 1))));
+          const meterInfo = state.shotMeter?.playerId === player.id ? state.shotMeter : undefined;
+          const ideal = meterInfo?.ideal ?? 0.62;
+          const gw = meterInfo?.greenWindow ?? 0.065;
+          const maxC = meterInfo?.maxCharge ?? 1.2;
+          const meterColor = Math.abs(charge - ideal) <= gw ? '#baff93' : charge > ideal + gw ? '#ff7d7c' : '#ffc763';
+          line(target, meterColor, ratio * 2.7, ...marker.slice(0, 2 + Math.floor(Math.min(1, charge / maxC) * (steps - 1))));
         }
       } else {
         line(target, '#0f273088', ratio * 2.8, ...marker);

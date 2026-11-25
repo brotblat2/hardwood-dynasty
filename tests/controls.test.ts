@@ -255,4 +255,90 @@ test('controls map intenseD, capture directional dribbleDir, and derive euro ste
   };
   const rim = { x: 12.65, z: 0 };
   assert.equal(deriveShotType(slasher, { x: 0.45, z: 0.89 }, rim, { dribble: true, sprint: false }), 'euro');
+
+  // Pull-up jumper off moving midrange dribble & baseline reverse layup
+  const puller: GamePlayer = {
+    ...slasher,
+    position: { x: 7.4, z: 2.0 },
+    velocity: { x: 3.4, z: 0 },
+  };
+  assert.equal(deriveShotType(puller, { x: 0.9, z: -0.2 }, rim, { sprint: true }), 'pullUp');
+
+  const baselineDriver: GamePlayer = {
+    ...slasher,
+    position: { x: 12.15, z: 1.4 },
+    velocity: { x: 0.2, z: -3.2 },
+  };
+  assert.equal(deriveShotType(baselineDriver, { x: 0.35, z: -0.92 }, rim, { sprint: false }), 'reverseLayup');
+
+  // Touch swipe-dribble & desktop mouse Pro-Stick flick + fast stick reversal
+  input.clear();
+  input.touch.dribbleFlick({ x: 0, z: 1 });
+  const touchSwipe = input.read(bindings);
+  assert.equal(touchSwipe.dribble, true);
+  assert.ok((touchSwipe.dribbleDir?.z ?? 0) > 0.9);
+
+  input.proStickFlick({ x: -1, z: 0 });
+  const mouseFlick = input.read(bindings);
+  assert.equal(mouseFlick.dribble, true);
+  assert.ok((mouseFlick.dribbleDir?.x ?? 0) < -0.9);
+
+  const rapidPad = { axes: [0, 0, 0.9, 0], buttons: stickButtons };
+  input.sampleGamepad(rapidPad);
+  input.sampleGamepad(rapidPad);
+  rapidPad.axes = [0, 0, -0.9, 0];
+  input.sampleGamepad(rapidPad);
+  const crossBack = input.read(bindings, rapidPad);
+  assert.equal(crossBack.dribble, true);
+  assert.ok((crossBack.dribbleDir?.x ?? 0) > 0.5, 'captures initial stick peak before reversal');
+
+  // Hands-up contest (KeyH + Touch + Gamepad rightStick)
+  input.clear();
+  input.keyDown('KeyH', bindings);
+  assert.equal(input.read(bindings).handsUp, true);
+  input.keyUp('KeyH');
+  assert.equal(input.read(bindings).handsUp, false);
+
+  input.touch.press(4, 'handsUp');
+  assert.equal(input.read(bindings).handsUp, true);
+  input.touch.release(4);
+  assert.equal(input.read(bindings).handsUp, false);
+
+  const stickUpPad = { axes: [0, 0, 0, -0.8], buttons: stickButtons };
+  const stickRead = input.read(bindings, stickUpPad);
+  assert.ok(stickRead.rightStick && stickRead.rightStick.z < -0.5);
+
+  // Flashy pass (Keyboard O, Touch flashyPass & iconPass, Gamepad RB + A, Gamepad face padSlot)
+  input.clear();
+  input.keyDown('KeyO', bindings);
+  const keyFlashy = input.read(bindings);
+  assert.equal(keyFlashy.pass, true);
+  assert.equal(keyFlashy.passType, 'flashy');
+
+  input.clear();
+  input.touch.press(5, 'flashyPass');
+  input.touch.release(5);
+  const touchFlashy = input.read(bindings);
+  assert.equal(touchFlashy.pass, true);
+  assert.equal(touchFlashy.passType, 'flashy');
+
+  input.touch.press(6, 'iconPass');
+  input.touch.release(6);
+  assert.equal(input.read(bindings).iconPassToggle, true);
+
+  input.clear();
+  const flashyButtons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));
+  flashyButtons[5] = { pressed: true, touched: true, value: 1 }; // RB
+  flashyButtons[0] = { pressed: true, touched: true, value: 1 }; // A
+  const padFlashy = input.read(bindings, { axes: [0, 0, 0, 0], buttons: flashyButtons });
+  assert.equal(padFlashy.pass, true);
+  assert.equal(padFlashy.passType, 'flashy');
+  assert.equal(padFlashy.screen, false);
+  assert.equal(padFlashy.padSlot, 3);
+
+  // KeyF toggles Roll / Fade pick mode on rising edge.
+  input.clear();
+  input.keyDown('KeyF', bindings);
+  assert.equal(input.read(bindings).toggleScreenMode, true);
+  assert.equal(input.read(bindings).toggleScreenMode, false);
 });

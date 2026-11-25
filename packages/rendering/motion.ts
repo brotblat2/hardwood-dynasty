@@ -36,6 +36,8 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
   let pumpFake = 0;
   let stealSwipe = 0;
   let intenseD = 0;
+  let handsUp = 0;
+  let boxOut = 0;
   let bodyUp = 0;
   let stumble = 0;
   let flyBy = 0;
@@ -58,6 +60,8 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
       smoothFacing = player.facing;
       pose.facing = player.facing;
       intenseD = 0;
+      handsUp = 0;
+      boxOut = 0;
       bodyUp = 0;
       stumble = 0;
       flyBy = 0;
@@ -89,6 +93,8 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
     const age = event ? (tick - event.tick) / TICK_RATE : Infinity;
     stealSwipe = lerp(stealSwipe, Number(player.pose === 'steal' || (event?.type === 'steal' && age < 0.32)), fast);
     intenseD = lerp(intenseD, Number(Boolean(action?.intenseD)), fast);
+    handsUp = lerp(handsUp, Number(Boolean(action?.handsUp)), fast);
+    boxOut = lerp(boxOut, Number(Boolean(action?.boxOut)), fast);
     bodyUp = lerp(bodyUp, Number(player.pose === 'bodyUp' || action?.bodyUp === 'clamp' || action?.bodyUp === 'ride'), fast);
     stumble = lerp(stumble, action?.stumble ?? Number(player.pose === 'stumble'), fast);
     flyBy = lerp(flyBy, action?.flyBy ?? Number(player.pose === 'flyBy'), fast);
@@ -98,22 +104,31 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
 
     const shot = event?.type === 'shot' && age < 0.53 ? clamp(1 - Math.max(0, age - 0.2) / 0.33, 0, 1) : 0;
     const activeShotStyle = action?.shotStyle ?? (
-      event?.detail?.startsWith('Dunk') || event?.detail?.startsWith('Alley-oop') ? 'dunk'
+      event?.detail?.startsWith('Contact dunk') ? 'contactDunk'
+        : event?.detail?.startsWith('Dunk') || event?.detail?.startsWith('Alley-oop') ? 'dunk'
         : event?.detail?.startsWith('Hook') ? 'hook'
         : event?.detail?.startsWith('Fadeaway') ? 'fadeaway'
         : event?.detail?.startsWith('Step-back') ? 'stepBack'
+        : event?.detail?.startsWith('Pull-up') ? 'pullUp'
         : event?.detail?.startsWith('Euro') ? 'euro'
         : event?.detail?.startsWith('Floater') ? 'floater'
+        : event?.detail?.startsWith('Reverse layup') ? 'reverseLayup'
         : event?.detail?.startsWith('Layup') ? 'layup'
         : undefined
     );
     const activeShot = Math.max(shot, charge > 0 ? clamp(charge / 0.5, 0, 0.85) : 0);
-    const dunk = (shot > 0 || charge > 0) && activeShotStyle === 'dunk';
+    const dunk = (shot > 0 || charge > 0) && (activeShotStyle === 'dunk' || activeShotStyle === 'contactDunk');
     const hookShot = (shot > 0 || charge > 0) && activeShotStyle === 'hook';
     const euroShot = (shot > 0 || charge > 0) && activeShotStyle === 'euro';
+    const reverseShot = (shot > 0 || charge > 0) && activeShotStyle === 'reverseLayup';
     const floaterShot = (shot > 0 || charge > 0) && activeShotStyle === 'floater';
     const fadeOrStepBack = (shot > 0 || charge > 0) && (activeShotStyle === 'fadeaway' || activeShotStyle === 'stepBack');
-    const highFinish = dunk || activeShotStyle === 'layup' || hookShot || floaterShot || euroShot;
+    const highFinish = dunk || activeShotStyle === 'layup' || reverseShot || hookShot || floaterShot || euroShot;
+    const activePassStyle = action?.passStyle ?? (
+      event?.type === 'pass' && (event.detail === 'chest' || event.detail === 'bounce' || event.detail === 'lob' || event.detail === 'flashy')
+        ? event.detail
+        : undefined
+    );
     const passing = event?.type === 'pass' && age < 0.36 ? Math.sin((age + 0.07) / 0.43 * Math.PI) : 0;
     const contestAge = lastContest < 0 ? Infinity : (tick - lastContest) / TICK_RATE;
     const jumpArc = (t: number, duration: number) => t < duration ? Math.sin(Math.PI * (t + 0.035) / (duration + 0.035)) : 0;
@@ -134,6 +149,7 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
       : dm === 'behindBack' ? -mDir * moveArc * 0.20
       : 0;
     const moveTilt = dm === 'stepBack' ? -moveArc * 0.26
+      : dm === 'snatchBack' ? -moveArc * 0.30
       : dm === 'jab' ? moveArc * 0.18
       : dm === 'spin' ? moveArc * 0.16
       : 0;
@@ -141,8 +157,10 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
       : dm === 'betweenLegs' ? -mDir * moveArc * 0.30
       : dm === 'inAndOut' ? mDir * moveArc * 0.26
       : dm === 'hesitation' ? -mDir * moveArc * 0.18
+      : dm === 'snatchBack' ? -mDir * moveArc * 0.14
       : 0;
     const moveCrouch = dm === 'betweenLegs' ? moveArc * 0.22
+      : dm === 'snatchBack' ? moveArc * 0.24
       : dm === 'stepBack' ? moveArc * 0.18
       : dm === 'jab' ? moveArc * 0.16
       : dm === 'crossover' ? moveArc * 0.14
@@ -155,23 +173,23 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
     const euroWeave = euroShot ? Math.sin(gPhase * Math.PI * 2) * 0.24 : 0;
     const gatherDip = charge > 0 ? clamp(1 - Math.max(0, charge - 0.22) / 0.16, 0, 1) : 0;
     const crouch = movement * 0.09 + screen * 0.12 + gather * (1 - shot) * gatherDip * 0.14 +
-      slide * 0.10 + intenseD * 0.15 + bodyUp * 0.12 + postUp * 0.16 + pumpFake * 0.14 +
+      slide * 0.10 + intenseD * 0.15 + boxOut * 0.18 + bodyUp * 0.12 + postUp * 0.16 + pumpFake * 0.14 +
       tripleThreat * 0.13 + deadDribble * 0.07 + stumble * 0.18 + moveCrouch + Math.abs(dribbleGroove) * 0.03 * dribble;
     pose.rise = jump + moveRise + (0.008 + (1 - Math.cos(stride * 2)) * 0.023) * run;
     pose.crouch = crouch;
-    pose.tilt = run * 0.15 + screen * 0.12 + gather * 0.08 + stealSwipe * 0.28 +
+    pose.tilt = run * 0.15 + screen * 0.12 + boxOut * 0.14 + gather * 0.08 + stealSwipe * 0.28 +
       bodyUp * 0.18 + intenseD * 0.10 + postUp * 0.22 + flyBy * 0.42 + (dunk ? activeShot * 0.24 : 0) -
       (fadeOrStepBack ? activeShot * 0.36 : 0) + moveTilt + stumble * Math.cos(tick * 0.42) * 0.18;
     pose.roll = -lateral * run * 0.11 + Math.sin(stride) * run * 0.035 + moveRoll + euroWeave + dribbleGroove * 0.045 * dribble + stumble * Math.sin(tick * 0.55) * 0.34;
-    pose.twist = Math.sin(stride) * 0.1 * run + stealSwipe * 0.35 +
-      (hookShot ? activeShot * 0.52 : highFinish ? shot * 0.19 : 0) + moveTwist + bodyUp * 0.14 + postUp * 0.26;
+    pose.twist = Math.sin(stride) * 0.1 * run + stealSwipe * 0.35 + (activePassStyle === 'flashy' ? passing * 0.62 : 0) +
+      (hookShot ? activeShot * 0.52 : reverseShot ? activeShot * 0.42 : highFinish ? shot * 0.19 : 0) + moveTwist + bodyUp * 0.14 + postUp * 0.26;
 
     for (let i = 0; i < 2; i++) {
       const sign = i === 0 ? -1 : 1;
       const step = stride + i * Math.PI;
       const swing = Math.sin(step) * run * 0.46;
       const lift = Math.max(0, Math.cos(step)) ** 1.5 * run * 0.26;
-      const spacing = thickness * 0.143 + screen * 0.16 + slide * 0.14 + intenseD * 0.16 +
+      const spacing = thickness * 0.143 + screen * 0.16 + slide * 0.14 + intenseD * 0.16 + boxOut * 0.20 +
         bodyUp * 0.12 + postUp * 0.17 + deadDribble * 0.08 + stumble * 0.18 + (dm === 'betweenLegs' ? moveArc * 0.15 : 0);
       const scissor = dm === 'betweenLegs' ? (sign === mDir ? 1 : -1) * moveArc * 0.36
         : dm === 'jab' && sign === mDir ? moveArc * 0.34
@@ -209,6 +227,10 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
           blend(arm.joint, -0.44, 1.30 - crouch, 0.16, intenseD);
           blend(arm.end, -0.52, 1.15 - crouch, 0.34, intenseD);
         }
+      }
+      if (boxOut > 0.02) {
+        blend(arm.joint, sign * 0.44, 1.38 - crouch, -0.06, boxOut);
+        blend(arm.end, sign * 0.56, 1.32 - crouch, -0.18, boxOut);
       }
       if (bodyUp > 0.02) {
         blend(arm.joint, sign * 0.29, 1.42 - crouch, 0.20, bodyUp);
@@ -251,6 +273,10 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
       blend(arm.end, sign * 0.11, 1.88 - crouch, 0.32, pumpFake);
       blend(arm.joint, sign * 0.369, 1.825 - crouch, 0.11, defense);
       blend(arm.end, sign * (i === 1 ? 0.36 : 0.50), 2.118 - crouch - (i === 1 ? 0 : 0.16), 0.16, defense);
+      if (handsUp > 0.02) {
+        blend(arm.joint, sign * 0.30, 1.78 - crouch, 0.12, handsUp);
+        blend(arm.end, sign * 0.25, 2.16 - crouch, 0.18, handsUp);
+      }
       if (flyBy > 0.02) {
         blend(arm.joint, sign * 0.26, 1.88 - crouch, 0.28, flyBy);
         blend(arm.end, sign * 0.22, 2.24 - crouch, 0.48, flyBy);
@@ -267,8 +293,24 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
         blend(arm.joint, -0.34, 1.35 - crouch, -0.14, stealSwipe);
         blend(arm.end, -0.40, 1.24 - crouch, -0.22, stealSwipe);
       }
-      blend(arm.joint, sign * 0.196, 1.40 - crouch, 0.34, passing);
-      blend(arm.end, sign * 0.135, 1.47 - crouch, 0.65, passing);
+      if (activePassStyle === 'flashy' && passing > 0.01) {
+        if (i === 1) {
+          blend(arm.joint, -0.20, 1.36 - crouch, -0.18, passing);
+          blend(arm.end, -0.34, 1.30 - crouch, -0.34, passing);
+        } else {
+          blend(arm.joint, -0.34, 1.42 - crouch, 0.14, passing);
+          blend(arm.end, -0.44, 1.48 - crouch, 0.24, passing);
+        }
+      } else if (activePassStyle === 'lob' && passing > 0.01) {
+        blend(arm.joint, sign * 0.22, 1.82 - crouch, 0.20, passing);
+        blend(arm.end, sign * 0.16, 2.08 - crouch, 0.36, passing);
+      } else if (activePassStyle === 'bounce' && passing > 0.01) {
+        blend(arm.joint, sign * 0.20, 1.30 - crouch, 0.34, passing);
+        blend(arm.end, sign * 0.14, 1.18 - crouch, 0.58, passing);
+      } else {
+        blend(arm.joint, sign * 0.196, 1.40 - crouch, 0.34, passing);
+        blend(arm.end, sign * 0.135, 1.47 - crouch, 0.65, passing);
+      }
       const hookOffset = hookShot && i === 1 ? 0.28 : 0;
       const offArmShield = hookShot && i === 0 ? -0.18 : 0;
       const endY = highFinish

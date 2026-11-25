@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { GameEvent, GamePlayer, Team, Vec3 } from '../contracts/index.ts';
+import type { GameEvent, GamePlayer, ShotMeterState, Team, Vec3 } from '../contracts/index.ts';
 import { appearanceFor } from './appearance.ts';
 import { canvasTexture } from './court.ts';
 import { mergeStaticMeshes } from './geometry.ts';
@@ -410,16 +410,19 @@ export function makePlayerFactory(anisotropy = 2) {
     greenRing.visible = false;
     root.add(shadow, ring, meter, clampArc, statusRing, greenRing);
 
-    function animate(gamePlayer: GamePlayer, tick: number, heldBall: Vec3 | undefined, selected: boolean, charge: number, event: GameEvent | undefined, greenPulse = 0) {
+    function animate(gamePlayer: GamePlayer, tick: number, heldBall: Vec3 | undefined, selected: boolean, charge: number, event: GameEvent | undefined, greenPulse = 0, shotMeterInfo?: ShotMeterState | null) {
       const pose = motion(gamePlayer, tick, heldBall, charge, event);
       root.position.set(gamePlayer.position.x, 0, gamePlayer.position.z);
       model.rotation.y = Math.PI / 2 - pose.facing;
       ring.visible = selected;
       meter.visible = selected && charge > 0;
       if (meter.visible) {
-        const fraction = Math.min(charge / 1.2, 1);
+        const maxC = shotMeterInfo?.maxCharge ?? 1.2;
+        const ideal = shotMeterInfo?.ideal ?? 0.62;
+        const gw = shotMeterInfo?.greenWindow ?? 0.065;
+        const fraction = Math.min(charge / maxC, 1);
         meter.geometry.setDrawRange(0, Math.max(6, Math.round(fraction * 64) * 6));
-        meterMaterial.color.copy(Math.abs(charge - 0.62) < 0.065 ? chargeGreen : charge > 0.72 ? lateRed : clockGold);
+        meterMaterial.color.copy(Math.abs(charge - ideal) <= gw ? chargeGreen : charge > ideal + gw ? lateRed : clockGold);
       }
       const action = gamePlayer.action;
       const clamping = action?.bodyUp === 'clamp';

@@ -246,11 +246,16 @@ tbody tr:last-child td { border-bottom: 0; }
   .scoreboard { min-height: 44px; }
   .player-hud { min-width: 116px; max-width: 135px; bottom: auto; top: max(62px,calc(env(safe-area-inset-top) + 50px)); padding: 4px 6px; }
   .player-hud p { display: none; }
-  .tactical-group { bottom: auto; top: max(62px,calc(env(safe-area-inset-top) + 50px)); right: max(12px,env(safe-area-inset-right)); gap: 4px; }
   .tactical-pill, .screen-mode-pill { padding: 4px 8px; font-size: 11px; }
 }
+@media (pointer: coarse) and (hover: none) {
+  .tactical-group { display: none; }
+  .match:has(.hd-touch-controls) .player-hud .release { display: none; }
+  .hd-touch-controls__extras .tactical-pill,
+  .hd-touch-controls__extras .screen-mode-pill { min-height: 44px; }
+}
 @media (max-height: 460px) and (pointer: coarse) {
-  .player-hud, .tactical-group { top: max(50px, calc(env(safe-area-inset-top) + 46px)); }
+  .player-hud { top: max(50px, calc(env(safe-area-inset-top) + 46px)); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }

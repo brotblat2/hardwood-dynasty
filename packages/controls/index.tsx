@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent } from 'react';
+import type { CSSProperties, PointerEvent, ReactNode } from 'react';
 import { zeroControl } from '../contracts/index.ts';
 import type { ShotMeterState } from '../contracts/index.ts';
 import {
@@ -77,7 +77,7 @@ const TOUCH_BUTTONS = [
   { action: 'flashyPass', label: 'Flashy', accessibleLabel: 'Flashy pass' },
   { action: 'dribble', label: 'Dribble', accessibleLabel: 'Dribble move' },
   { action: 'pass', label: 'Pass', accessibleLabel: 'Pass' },
-  { action: 'shoot', label: 'Shoot', accessibleLabel: 'Shoot, hold and release' },
+  { action: 'shoot', label: 'Shoot', accessibleLabel: 'Shoot' },
   { action: 'intenseD', label: 'Clamp', accessibleLabel: 'Intense defense or box out' },
   { action: 'handsUp', label: 'Hands Up', accessibleLabel: 'Hands up contest' },
   { action: 'switchPlayer', label: 'Switch', accessibleLabel: 'Switch player' },
@@ -93,16 +93,29 @@ const STILL = { x: 0, z: 0 };
 
 type Button = (typeof TOUCH_BUTTONS)[number] | typeof SPRINT_BUTTON;
 export type TouchContext = 'offense' | 'offball' | 'defense' | 'loose' | 'freeThrow';
-const CONTEXT_ACTIONS: Record<TouchContext, readonly TouchAction[]> = {
-  offense: ['iconPass', 'screen', 'pumpFake', 'bouncePass', 'lobPass', 'flashyPass', 'dribble', 'pass', 'shoot', 'sprint'],
-  offball: ['pass', 'screen', 'switchPlayer', 'sprint'],
-  defense: ['intenseD', 'handsUp', 'switchPlayer', 'steal', 'contest', 'sprint'],
-  loose: ['intenseD', 'steal', 'switchPlayer', 'contest', 'sprint'],
+const MAIN_ACTIONS: Record<TouchContext, readonly TouchAction[]> = {
+  offense: ['pass', 'shoot'],
+  offball: ['pass'],
+  defense: ['switchPlayer', 'steal', 'contest'],
+  loose: ['switchPlayer', 'contest'],
   freeThrow: ['shoot'],
 };
-type TouchControlsProps = { touch: TouchInput; visible?: boolean; context?: TouchContext; charge?: number; shotMeter?: ShotMeterState | null; iconPassActive?: boolean };
+const EXTRA_ACTIONS: Record<TouchContext, readonly TouchAction[]> = {
+  offense: ['iconPass', 'screen', 'pumpFake', 'bouncePass', 'lobPass', 'flashyPass', 'dribble', 'intenseD'],
+  offball: ['screen'],
+  defense: ['intenseD', 'handsUp'],
+  loose: ['intenseD'],
+  freeThrow: [],
+};
+const CORE_ACTIONS = new Set(Object.values(MAIN_ACTIONS).flat());
+type TouchControlsProps = {
+  touch: TouchInput; visible?: boolean; context: TouchContext;
+  charge?: number; shotMeter?: ShotMeterState | null; iconPassActive?: boolean;
+  playerLocked?: boolean; tactics?: ReactNode;
+};
 
-export function TouchControls({ touch, visible, context, charge = 0, shotMeter, iconPassActive }: TouchControlsProps) {
+export function TouchControls({ touch, visible, context, charge = 0, shotMeter, iconPassActive, playerLocked, tactics }: TouchControlsProps) {
+  const [expanded, setExpanded] = useState(false);
   const [stick, setStick] = useState(STILL);
   const [sprinting, setSprinting] = useState(false);
   const [pressedActions, setPressedActions] = useState<TouchAction[]>([]);
@@ -121,7 +134,10 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
       setPressedActions([]);
       touch.clear();
     };
-    if (visible === false) clear();
+    if (visible === false) {
+      clear();
+      setExpanded(false);
+    }
     window.addEventListener('blur', clear);
     document.addEventListener('visibilitychange', clear);
     return () => {
@@ -184,10 +200,11 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
     if (cancel) touch.cancel(pointerId);
     else touch.release(pointerId);
   };
-  const renderButton = ({ action, label, accessibleLabel }: Button) => {
+  const renderButton = ({ action, label, accessibleLabel }: Button, visibleActions: readonly TouchAction[]) => {
     const pressed = pressedActions.includes(action) || (action === 'sprint' && sprinting) || (action === 'iconPass' && !!iconPassActive);
     const displayLabel = context === 'offense' && action === 'screen' ? 'Pick'
       : context === 'offball' && action === 'pass' ? 'Call Pass'
+      : context === 'offense' && action === 'intenseD' ? 'Post Up'
       : context === 'defense' && action === 'contest' ? 'Block'
       : context === 'loose' && action === 'contest' ? 'Rebound'
       : context === 'loose' && action === 'intenseD' ? 'Box Out'
@@ -204,8 +221,9 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
         type="button"
         key={action}
         className={`hd-touch-controls__action hd-touch-controls__action--${action}`}
-        aria-label={accessibleLabel}
-        hidden={!!context && !CONTEXT_ACTIONS[context].includes(action) && !pressed}
+        aria-label={displayLabel === label ? accessibleLabel : displayLabel}
+        aria-description={isShoot ? 'Tap to shoot, or hold and release to time your shot.' : undefined}
+        hidden={(!visibleActions.includes(action) && !pressed) || (playerLocked && action === 'switchPlayer')}
         data-pressed={pressed}
         data-green={inGreen || undefined}
         style={chargePct ? ({ '--charge': `${chargePct}%` } as CSSProperties) : undefined}
@@ -242,15 +260,23 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
         }}
       >
         {displayLabel}
+        {isShoot && <small aria-hidden="true">Tap or hold</small>}
       </button>
     );
   };
 
+  const toggleExtras = () => {
+    if (expanded) {
+      for (const [id, action] of buttonPointers.current) {
+        if (!CORE_ACTIONS.has(action)) releaseButton(id, true);
+      }
+    }
+    setExpanded(value => !value);
+  };
   if (visible === false) return null;
   return (
     <div className={`hd-touch-controls${visible ? ' hd-touch-controls--visible' : ''}`} role="group" aria-label="Touch controls">
       <div className="hd-touch-controls__movement">
-        {renderButton(SPRINT_BUTTON)}
         <div
           className="hd-touch-controls__stick"
           role="img"
@@ -275,8 +301,19 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
           />
         </div>
       </div>
-      <div className="hd-touch-controls__actions">
-        {TOUCH_BUTTONS.map(renderButton)}
+      <div className="hd-touch-controls__action-area">
+        {context !== 'freeThrow' && <button type="button" className="hd-touch-controls__more"
+          aria-expanded={expanded} onClick={toggleExtras}>{expanded ? 'Less' : 'More'}</button>}
+        {expanded && <div hidden={context === 'freeThrow'} className="hd-touch-controls__extras" role="group" aria-label="More controls">
+          {TOUCH_BUTTONS.filter(({ action }) => !CORE_ACTIONS.has(action))
+            .map(button => renderButton(button, EXTRA_ACTIONS[context]))}
+          {renderButton(SPRINT_BUTTON, ['sprint'])}
+          {tactics}
+        </div>}
+        <div className="hd-touch-controls__actions">
+          {TOUCH_BUTTONS.filter(({ action }) => CORE_ACTIONS.has(action))
+            .map(button => renderButton(button, MAIN_ACTIONS[context]))}
+        </div>
       </div>
     </div>
   );

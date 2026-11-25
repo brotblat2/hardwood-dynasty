@@ -34,6 +34,29 @@ test('shoot is held through reads, and a quick tap survives a frame boundary', (
   assert.equal(input.read(bindings).shoot, false);
 });
 
+test('only a completed touch shot marks its release for tap assistance', () => {
+  const input = createInputState();
+  input.touch.press(1, 'shoot');
+  input.touch.release(1);
+  const down = input.read(bindings);
+  assert.equal(down.shoot, true);
+  assert.equal(down.touchShotReleased, undefined);
+  const release = input.read(bindings);
+  assert.equal(release.shoot, false);
+  assert.equal(release.touchShotReleased, true);
+  assert.equal(input.read(bindings).touchShotReleased, undefined);
+
+  input.touch.press(2, 'shoot');
+  assert.equal(input.read(bindings).shoot, true);
+  input.touch.cancel(2);
+  assert.equal(input.read(bindings).touchShotReleased, undefined);
+
+  input.keyDown('Space', bindings);
+  assert.equal(input.read(bindings).shoot, true);
+  input.keyUp('Space');
+  assert.equal(input.read(bindings).touchShotReleased, undefined);
+});
+
 test('switch player produces a single command per keyboard or gamepad press', () => {
   const input = createInputState();
   const buttons = Array.from({ length: 16 }, () => ({ pressed: false, touched: false, value: 0 }));

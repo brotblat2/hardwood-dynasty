@@ -193,9 +193,10 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         setIconPassActive(next);
       }
     };
+    let assistedTouchShot: string | undefined;
     const readFor = (state: GameState): { id: string; input: Control } => {
       const {
-        switchPlayer, passAim, iconPassToggle, iconSlot, padSlot, callPlay, toggleScreenMode, proStick, rightStick, ...input
+        switchPlayer, passAim, iconPassToggle, iconSlot, padSlot, callPlay, toggleScreenMode, proStick, rightStick, touchShotReleased, ...input
       } = readControl.current();
       if (suppressPadShootRef.current) {
         if (!input.shoot) suppressPadShootRef.current = false;
@@ -266,6 +267,9 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         delete pendingPlayRef.current.screenMode;
       }
 
+      if (assistedTouchShot && (assistedTouchShot !== owner?.id || selected.current !== owner.id || input.pass || input.pumpFake)) {
+        assistedTouchShot = undefined;
+      }
       if (owner?.id === selected.current) {
         input.handsUp = false;
         if (iconPassToggle) syncIconPass(!iconPassRef.current);
@@ -296,6 +300,16 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
           input.intenseD = false;
         }
         const curCharge = state.charge[owner.id] ?? 0;
+        // A tap completes a short gather. A longer hold keeps manual release timing.
+        if (touchShotReleased && curCharge > 0 && curCharge <= 0.2 && !input.pass && !input.pumpFake) {
+          assistedTouchShot = owner.id;
+        }
+        if (assistedTouchShot === owner.id) {
+          const meter = state.shotMeter?.playerId === owner.id ? state.shotMeter : undefined;
+          const releaseAt = (meter?.ideal ?? IDEAL_RELEASE) - 0.08;
+          if (curCharge > 0 && curCharge < releaseAt) input.shoot = true;
+          else assistedTouchShot = undefined;
+        }
         const atk = half ? 1 : attackSign(side.current);
         const distToRim = Math.hypot(atk * COURT.rimX - owner.position.x, -owner.position.z);
         const ownerSpeed = Math.hypot(owner.velocity.x, owner.velocity.z);
@@ -393,6 +407,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     let residual = 0;
     const tickMs = 1000 / TICK_RATE;
     const loop = (now: number) => {
+      if (pausedRef.current || document.hidden) assistedTouchShot = undefined;
       if (!pausedRef.current) sampleGamepad.current();
       if (!document.hidden && quality === 'auto' && graphicsQuality === 'high' && !qualityAdjusted) {
         const frameMs = now - last;
@@ -621,6 +636,18 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     return <span className={'team-fouls' + (count >= 5 ? ' bonus' : '')}>{count >= 5 ? 'BONUS' : `F:${count}`}</span>;
   };
 
+  const tactics = hud && !paused && !finish && !error ? <>
+    {hud.possession === side.current && (
+      <button type="button" className="screen-mode-pill" onClick={toggleScreenMode} title="Tap or press F to toggle Roll vs Fade">
+        <span>PICK</span>
+        <strong>{screenMode === 'roll' ? 'ROLL' : 'FADE'}</strong>
+      </button>
+    )}
+    <button type="button" className="tactical-pill" onClick={cycleTactical} title="Tap or press R to cycle play">
+      <span>{hud.possession === side.current ? 'OFFENSE' : 'DEFENSE'}</span>
+      <strong>{hud.possession === side.current ? PLAY_LABELS[offensePlay] : SCHEME_LABELS[defenseScheme]}</strong>
+    </button>
+  </> : null;
   return <main className="match">
     <div
       className="court-stage"
@@ -724,20 +751,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       </div> : null)}
       {event && event.type !== 'pass' && <p>{event.detail ?? ({ score: 'Basket', miss: 'Missed shot', rebound: 'Rebound', steal: 'Steal', block: 'Block', shot: 'Shot attempt', foul: 'Foul', turnover: 'Turnover', period: 'Period ended', assist: 'Assist', timeout: 'Timeout', substitution: 'Substitution' } as Record<string, string>)[event.type]}</p>}
     </div>}
-    {hud && !paused && !finish && !error && (
-      <div className="tactical-group">
-        {hud.possession === side.current && (
-          <button type="button" className="screen-mode-pill" onClick={toggleScreenMode} title="Tap or press F to toggle Roll vs Fade">
-            <span>PICK</span>
-            <strong>{screenMode === 'roll' ? 'ROLL' : 'FADE'}</strong>
-          </button>
-        )}
-        <button type="button" className="tactical-pill" onClick={cycleTactical} title="Tap or press R to cycle play">
-          <span>{hud.possession === side.current ? 'OFFENSE' : 'DEFENSE'}</span>
-          <strong>{hud.possession === side.current ? PLAY_LABELS[offensePlay] : SCHEME_LABELS[defenseScheme]}</strong>
-        </button>
-      </div>
-    )}
+    {tactics && <div className="tactical-group">{tactics}</div>}
     {hud && !paused && !finish && !error && (
       <div className="context-bar desktop-only" aria-label="Active controls">
         {hud.ball.ownerId === null ? <>
@@ -765,7 +779,9 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       charge={charge}
       shotMeter={hud?.shotMeter?.playerId === selection ? hud.shotMeter : null}
       iconPassActive={iconPassActive}
-      visible={paused || finish || !ready ? false : undefined}
+      playerLocked={!!setup.playerLock}
+      tactics={tactics}
+      visible={paused || finish || !ready || !!error ? false : undefined}
     />
     {showControls && <div className="control-help"><div className="panel-head"><h3>Controls</h3><button className="icon-button" onClick={() => { setShowControls(false); stage.current?.focus(); }}>×</button></div>
       <div className="help-tabs" role="tablist">

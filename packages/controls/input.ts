@@ -4,6 +4,7 @@ import { selectPassTarget } from '../game-engine/index.ts';
 
 export type PlayerControl = Control & {
   switchPlayer?: boolean;
+  touchShotReleased?: boolean;
   passAim?: Vec2;
   iconPassToggle?: boolean;
   iconSlot?: 0 | 1 | 2 | 3;
@@ -423,7 +424,8 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       bindings = mergeBindings(nextBindings);
       sampleGamepad(gamepad);
       while (shootEdges[0]?.down === lastShoot) shootEdges.shift();
-      lastShoot = shootEdges.shift()?.down ?? shootDown();
+      const shotEdge = shootEdges.shift();
+      lastShoot = shotEdge?.down ?? shootDown();
       const held = (action: (typeof heldActions)[number]) =>
         !!takePress([action]) || keyDown(action) || touchDown(action) || pad.down(action);
       const dribblePress = takePress(['dribble']);
@@ -449,6 +451,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
         intenseD: held('intenseD'),
         ...(dribbleDir ? { dribbleDir } : {}),
         shoot: lastShoot,
+        ...(!lastShoot && shotEdge?.touch ? { touchShotReleased: true } : {}),
         pass: !!pass,
         passType: pass && (pass.action === 'flashyPass' ? 'flashy' : pass.action === 'lobPass' ? 'lob' : pass.action === 'bouncePass' ? 'bounce' : 'chest'),
         passAim: pass && Math.hypot(passAim.x, passAim.z) >= PASS_AIM_MINIMUM ? passAim : undefined,

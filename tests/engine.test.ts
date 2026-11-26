@@ -605,3 +605,79 @@ test('driving layup/dunk keeps athletic momentum during gather and finishes clea
   for (let i = 0; i < 70 && g.state.score[0] === 0; i++) g.step();
   assert.equal(g.state.score[0], 2, 'quick-release uncontested driving finish converts cleanly');
 });
+
+function openCourtCut() {
+  const g = engine({ playersPerTeam: 1, mode: 'practice' });
+  const [handler, defender] = g.state.players;
+  handler.position = { x: 2, z: 0 };
+  defender.position = { x: -12, z: 6 };
+  for (let i = 0; i < 16; i++) g.step({ [handler.id]: { move: { x: 1, z: 0 } } });
+  return { g, handler };
+}
+
+test('a sustained steering cut transfers hands through one finite bounce and replays from mid-cross', () => {
+  const { g, handler } = openCourtCut();
+  const before = handler.action!.ballHand;
+  const controls = { [handler.id]: { move: { x: 0.12, z: 0.92 }, sprint: true } };
+  g.step(controls);
+  assert.equal(handler.action?.dribbleMove, undefined);
+  g.step(controls);
+  assert.equal(handler.action?.dribbleMove, 'crossover');
+  const heights = [g.state.ball.position.y];
+  const restored = createEngine(teams, undefined, JSON.parse(JSON.stringify(g.state)));
+  for (let i = 0; i < 32; i++) {
+    g.step(controls); restored.step(controls);
+    if (handler.action?.dribbleMove) heights.push(g.state.ball.position.y);
+    assert.equal(g.state.ball.ownerId, handler.id);
+    assert.ok(Object.values(g.state.ball.velocity).every(Number.isFinite));
+  }
+  assert.deepEqual(g.state, restored.state);
+  assert.equal(handler.action?.ballHand, -before!);
+  assert.equal(handler.action?.dribbleMove, undefined);
+  const bottom = heights.indexOf(Math.min(...heights));
+  assert.ok(bottom > 0 && bottom < heights.length - 1);
+  assert.ok(heights[bottom] < 0.14);
+  assert.ok(heights.slice(1, bottom + 1).every((y, i) => y < heights[i]));
+  assert.ok(heights.slice(bottom + 1).every((y, i) => y > heights[bottom + i]));
+});
+
+test('single-frame twitch, mild steering and shot gather keep automatic crossovers out of the action', () => {
+  const { g, handler } = openCourtCut();
+  const steps = [{ x: -1, z: 0 }, { x: 1, z: 0 }, { x: 1, z: 0 }, { x: 0.9, z: 0.2 }, { x: 0.85, z: -0.25 }];
+  for (const move of steps) {
+    g.step({ [handler.id]: { move } });
+    assert.equal(handler.action?.dribbleMove, undefined);
+  }
+  for (let i = 0; i < 5; i++) {
+    g.step({ [handler.id]: { move: { x: -1, z: 0 }, shoot: true } });
+    assert.equal(handler.action?.dribbleMove, undefined);
+    assert.ok(g.state.charge[handler.id] > 0);
+  }
+});
+
+test('quick repeat cuts stay in cooldown; reversing again after recovery restores original hand', () => {
+  const { g, handler } = openCourtCut();
+  const before = handler.action!.ballHand;
+  const right = { [handler.id]: { move: { x: 0, z: 1 } } };
+  const left = { [handler.id]: { move: { x: 0, z: -1 } } };
+  for (let i = 0; i < 25; i++) g.step(right);
+  assert.equal(handler.action?.ballHand, -before!);
+  for (let i = 0; i < 18; i++) {
+    g.step(left);
+    assert.equal(handler.action?.dribbleMove, undefined);
+  }
+  for (let i = 0; i < 20; i++) g.step(right);
+  assert.equal(handler.action?.ballHand, -before!, 'already dribbling with the outside hand');
+  assert.equal(handler.action?.dribbleMove, undefined);
+  for (let i = 0; i < 26; i++) g.step(left);
+  assert.equal(handler.action?.ballHand, before);
+});
+
+test('a quick analog-stick sweep through intermediate directions can cross without a button', () => {
+  const { g, handler } = openCourtCut();
+  for (const angle of [20, 45, 70, 90, 93]) {
+    const a = angle * Math.PI / 180;
+    g.step({ [handler.id]: { move: { x: 0.8 * Math.cos(a), z: 0.8 * Math.sin(a) } } });
+  }
+  assert.equal(handler.action?.dribbleMove, 'crossover');
+});

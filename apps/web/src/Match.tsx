@@ -10,9 +10,10 @@ import { createCoach } from '../../../packages/basketball-ai/index.ts';
 import { createRenderer } from '../../../packages/rendering/index.ts';
 import {
   TouchControls, useControls, deriveShotType, formatKeyboardHints, GAMEPAD_HINTS,
-  mergeBindings, selectDirectionalPassTarget, selectSwitchTarget,
+  mergeBindings, selectSwitchTarget,
 } from '../../../packages/controls/index.tsx';
 import type { KeyboardBindings, TouchContext } from '../../../packages/controls/index.tsx';
+import { formatKeys } from '../../../packages/controls/input.ts';
 import { createRoomClient } from '../../../packages/multiplayer/index.ts';
 import { createCourtAudio } from './court-audio.ts';
 import { summarizeGame } from '../../../packages/analytics/index.ts';
@@ -77,7 +78,6 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const selected = useRef('');
   const side = useRef<Side>(setup.side ?? 0);
   const autoFollow = useRef(true);
-  const passTarget = useRef<string | undefined>(undefined);
   const pausedRef = useRef(false);
   const delivered = useRef(false);
   const [paused, setPaused] = useState(false);
@@ -115,14 +115,11 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const calloutRef = useRef<HTMLDivElement>(null);
   const playCalloutRef = useRef<HTMLDivElement>(null);
   const badgeRefs = useRef<(HTMLButtonElement | null)[]>([null, null, null, null]);
-  const mouseFlickRef = useRef<{ x: number; y: number; fired: boolean; suppressMenu: boolean } | null>(null);
   const controls = useControls({ enabled: !paused && !error && ready, bindings });
   const readControl = useRef(controls.read);
   readControl.current = controls.read;
   const sampleGamepad = useRef(controls.sampleGamepad);
   sampleGamepad.current = controls.sampleGamepad;
-  const proStickFlick = useRef(controls.proStickFlick);
-  proStickFlick.current = controls.proStickFlick;
   const benchAction = useRef<{ timeout?: boolean; substituteId?: string }>({});
   const [benchPlayer, setBenchPlayer] = useState('');
   const snapshot = useRef(onSnapshot);
@@ -193,10 +190,10 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         setIconPassActive(next);
       }
     };
-    let assistedTouchShot: string | undefined;
+    let assistedShot: string | undefined;
     const readFor = (state: GameState): { id: string; input: Control } => {
       const {
-        switchPlayer, passAim, iconPassToggle, iconSlot, padSlot, callPlay, toggleScreenMode, proStick, rightStick, touchShotReleased, ...input
+        switchPlayer, passAim, iconPassToggle, iconSlot, padSlot, callPlay, toggleScreenMode, proStick, rightStick, touchShotReleased, keyboardShotReleased, ...input
       } = readControl.current();
       if (suppressPadShootRef.current) {
         if (!input.shoot) suppressPadShootRef.current = false;
@@ -267,8 +264,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         delete pendingPlayRef.current.screenMode;
       }
 
-      if (assistedTouchShot && (assistedTouchShot !== owner?.id || selected.current !== owner.id || input.pass || input.pumpFake)) {
-        assistedTouchShot = undefined;
+      if (assistedShot && (assistedShot !== owner?.id || selected.current !== owner.id || input.pass || input.pumpFake)) {
+        assistedShot = undefined;
       }
       if (owner?.id === selected.current) {
         input.handsUp = false;
@@ -301,14 +298,14 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
         }
         const curCharge = state.charge[owner.id] ?? 0;
         // A tap completes a short gather. A longer hold keeps manual release timing.
-        if (touchShotReleased && curCharge > 0 && curCharge <= 0.2 && !input.pass && !input.pumpFake) {
-          assistedTouchShot = owner.id;
+        if ((touchShotReleased || keyboardShotReleased) && curCharge > 0 && curCharge <= 0.2 && !input.pass && !input.pumpFake) {
+          assistedShot = owner.id;
         }
-        if (assistedTouchShot === owner.id) {
+        if (assistedShot === owner.id) {
           const meter = state.shotMeter?.playerId === owner.id ? state.shotMeter : undefined;
           const releaseAt = (meter?.ideal ?? IDEAL_RELEASE) - 0.08;
           if (curCharge > 0 && curCharge < releaseAt) input.shoot = true;
-          else assistedTouchShot = undefined;
+          else assistedShot = undefined;
         }
         const atk = half ? 1 : attackSign(side.current);
         const distToRim = Math.hypot(atk * COURT.rimX - owner.position.x, -owner.position.z);
@@ -328,18 +325,10 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
           }
         }
         const aim = passAim ? (renderer.current?.projectMove(passAim) ?? passAim) : moveCourt;
-        const preview = (passTarget.current && mates.some(p => p.id === passTarget.current))
-          ? passTarget.current
-          : selectDirectionalPassTarget(owner, own, aim) ?? selectPassTarget(owner, own, moveCourt, half ? 1 : attackSign(side.current), state.players);
+        const preview = input.targetId ?? selectPassTarget(owner, own, aim, half ? 1 : attackSign(side.current), state.players);
         passTargetPreviewRef.current = preview;
-        if (input.pass && !input.targetId) {
-          if (passTarget.current && mates.some(player => player.id === passTarget.current)) {
-            input.targetId = passTarget.current;
-          } else if (passAim) {
-            const target = selectDirectionalPassTarget(owner, own, renderer.current?.projectMove(passAim) ?? passAim);
-            if (target) input.targetId = target;
-          }
-          passTarget.current = undefined;
+        if (input.pass) {
+          input.targetId ??= preview;
           syncIconPass(false);
         }
       } else {
@@ -407,7 +396,7 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     let residual = 0;
     const tickMs = 1000 / TICK_RATE;
     const loop = (now: number) => {
-      if (pausedRef.current || document.hidden) assistedTouchShot = undefined;
+      if (pausedRef.current || document.hidden) assistedShot = undefined;
       if (!pausedRef.current) sampleGamepad.current();
       if (!document.hidden && quality === 'auto' && graphicsQuality === 'high' && !qualityAdjusted) {
         const frameMs = now - last;
@@ -597,7 +586,8 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
   const lastScore = hud?.events.findLast(value => value.type === 'score');
   const scoreFlash = lastScore && hud && hud.tick - lastScore.tick < TICK_RATE;
   const charge = hud?.charge[selection] ?? 0;
-  const keyboardHints = useMemo(() => formatKeyboardHints(mergeBindings(bindings)), [bindings]);
+  const keys = useMemo(() => mergeBindings(bindings), [bindings]);
+  const keyboardHints = useMemo(() => formatKeyboardHints(keys), [keys]);
   const cycleTactical = () => {
     if (hud?.possession === side.current) {
       const next = PLAYS[(PLAYS.indexOf(offensePlayRef.current) + 1) % PLAYS.length];
@@ -638,12 +628,12 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
 
   const tactics = hud && !paused && !finish && !error ? <>
     {hud.possession === side.current && (
-      <button type="button" className="screen-mode-pill" onClick={toggleScreenMode} title="Tap or press F to toggle Roll vs Fade">
+      <button type="button" className="screen-mode-pill" onClick={toggleScreenMode} title={`Tap or press ${formatKeys(keys.toggleScreenMode)} to change the screen`}>
         <span>PICK</span>
         <strong>{screenMode === 'roll' ? 'ROLL' : 'FADE'}</strong>
       </button>
     )}
-    <button type="button" className="tactical-pill" onClick={cycleTactical} title="Tap or press R to cycle play">
+    <button type="button" className="tactical-pill" onClick={cycleTactical} title={`Tap or press ${formatKeys(keys.callPlay)} to change tactics`}>
       <span>{hud.possession === side.current ? 'OFFENSE' : 'DEFENSE'}</span>
       <strong>{hud.possession === side.current ? PLAY_LABELS[offensePlay] : SCHEME_LABELS[defenseScheme]}</strong>
     </button>
@@ -654,40 +644,54 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
       tabIndex={-1}
       ref={stage}
       aria-label="Interactive 3D basketball court"
-      onContextMenu={event => {
-        if (mouseFlickRef.current?.suppressMenu) {
-          event.preventDefault();
-          mouseFlickRef.current = null;
-        }
-      }}
+      onContextMenu={event => event.preventDefault()}
       onPointerDown={event => {
-        if (event.button === 2) {
-          mouseFlickRef.current = { x: event.clientX, y: event.clientY, fired: false, suppressMenu: false };
+        const state = latest.current;
+        if (!state || paused || finish || !ready || error) return;
+        const own = state.players.filter(p => p.side === side.current);
+        const pickedId = renderer.current?.pickPlayer(event.clientX, event.clientY);
+        const picked = own.find(p => p.id === pickedId);
+        const hasBall = state.ball.ownerId === selected.current;
+        if (event.pointerType !== 'mouse') {
+          if (!picked) return;
+          if (hasBall && picked.id !== selected.current) controls.touch.pass(undefined, picked.id);
+          else if (!setup.playerLock) {
+            selected.current = picked.id;
+            autoFollow.current = false;
+            setSelection(picked.id);
+          }
           return;
         }
-        const playerId = renderer.current?.pickPlayer(event.clientX, event.clientY);
-        if (setup.playerLock || !latest.current?.players.some(player => player.id === playerId && player.side === side.current)) return;
-        if (!playerId) return;
-        if (latest.current.ball.ownerId === selected.current && playerId !== selected.current) passTarget.current = playerId;
-        else { selected.current = playerId; autoFollow.current = false; setSelection(playerId); }
-      }}
-      onPointerMove={event => {
-        const drag = mouseFlickRef.current;
-        if (!drag || drag.fired) return;
-        const dx = event.clientX - drag.x;
-        const dy = event.clientY - drag.y;
-        const len = Math.hypot(dx, dy);
-        if (len >= 20) {
-          drag.fired = true;
-          drag.suppressMenu = true;
-          const dir = { x: dx / len, z: dy / len };
-          proStickFlick.current(renderer.current?.projectMove(dir) ?? dir);
+        if (event.button !== 0 && event.button !== 2) return;
+        event.preventDefault();
+        event.currentTarget.focus();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        if (event.button === 2) {
+          if (state.possession !== side.current || state.ball.kind === 'loose' || state.ball.kind === 'shot') {
+            if (!setup.playerLock && picked) {
+              selected.current = picked.id;
+              autoFollow.current = false;
+              setSelection(picked.id);
+            } else controls.touch.press(event.pointerId, 'switchPlayer');
+          } else {
+            const player = own.find(p => p.id === selected.current);
+            const origin = player && renderer.current?.projectPoint(player.position.x, 1.0, player.position.z);
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const dx = event.clientX - bounds.left - (origin?.x ?? 0);
+            const dy = event.clientY - bounds.top - (origin?.y ?? 0);
+            const distance = Math.hypot(dx, dy);
+            const aim = origin?.visible && distance > 24 ? { x: dx / distance, z: dy / distance } : undefined;
+            controls.touch.pass(aim, picked?.id === selected.current ? undefined : picked?.id);
+          }
+        } else {
+          const shooting = hasBall || state.freeThrow?.shooterId === selected.current;
+          if (!shooting && state.possession === side.current && state.ball.ownerId) controls.touch.pass();
+          else controls.touch.press(event.pointerId, shooting ? 'shoot' : 'contest');
         }
       }}
-      onPointerUp={() => {
-        if (mouseFlickRef.current && !mouseFlickRef.current.suppressMenu) mouseFlickRef.current = null;
-      }}
-      onPointerCancel={() => { mouseFlickRef.current = null; }}
+      onPointerUp={event => { if (event.pointerType === 'mouse') controls.touch.release(event.pointerId); }}
+      onPointerCancel={event => controls.touch.cancel(event.pointerId)}
+      onLostPointerCapture={event => controls.touch.cancel(event.pointerId)}
     />
     <div className="court-overlays">
       <div className="overhead-meter" aria-hidden="true" ref={meterRef} hidden>
@@ -754,22 +758,10 @@ export function Match({ setup, camera, quality, bindings, mute, onExit, onResult
     {tactics && <div className="tactical-group">{tactics}</div>}
     {hud && !paused && !finish && !error && (
       <div className="context-bar desktop-only" aria-label="Active controls">
-        {hud.ball.ownerId === null ? <>
-          <span><kbd>Space</kbd> Rebound</span>
-          <span><kbd>L</kbd>/<kbd>E</kbd> Box Out</span>
-          <span><kbd>J</kbd> Switch</span>
-        </> : hud.possession === side.current ? <>
-          <span><kbd>Space</kbd> Shoot (Fake)</span>
-          <span><kbd>J</kbd>/<kbd>U</kbd>/<kbd>I</kbd>/<kbd>O</kbd> Pass</span>
-          <span><kbd>Tab</kbd> Icons</span>
-          <span><kbd>K</kbd> Dribble</span>
-          <span><kbd>E</kbd> Screen · <kbd>F</kbd> {screenMode === 'roll' ? 'Roll' : 'Fade'}</span>
-        </> : <>
-          <span><kbd>L</kbd> Tight D</span>
-          <span><kbd>H</kbd> Hands Up</span>
-          <span><kbd>Space</kbd> Block</span>
-          <span><kbd>K</kbd> Steal</span>
-          <span><kbd>J</kbd> Switch</span>
+        <span><kbd>{formatKeys([keys.up[0], keys.left[0], keys.down[0], keys.right[0]])}</kbd> Move</span>
+        {touchContext === 'offball' ? <span><kbd>Right click / {formatKeys(keys.pass.slice(0, 1))}</kbd> Call for pass</span> : <>
+          <span><kbd>Left click / {formatKeys(keys.shoot.slice(0, 1))}</kbd> {touchContext === 'loose' ? 'Rebound' : touchContext === 'defense' ? 'Block' : 'Shoot'}</span>
+          {touchContext !== 'freeThrow' && <span><kbd>Right click / {formatKeys(keys.pass.slice(0, 1))}</kbd> {touchContext === 'offense' ? 'Pass' : 'Switch'}</span>}
         </>}
       </div>
     )}

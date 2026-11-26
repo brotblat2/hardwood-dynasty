@@ -1,3 +1,4 @@
+import { trackDirectionalCut } from './dribble.ts';
 import { COURT } from '../contracts/index.ts';
 import type { Control, GamePlayer, Player, Side, Vec2 } from '../contracts/index.ts';
 import { angleDiff, clamp, distance, DT, LIMIT_X, LIMIT_Z, normalizeAngle } from './types.ts';
@@ -142,6 +143,16 @@ export function stepPlayerMovement(p: GamePlayer, cmd: Control | undefined, ctx:
     else if (localSide * dribble.hand < -0.35 && wantsSprint) handDriveBonus = 0.96;
   }
 
+  if (dribble) {
+    if (dribble.ballState === 'live' && !dribble.move && !charge && !cmd?.postUp && !cmd?.pumpFake &&
+      !cmd?.pass && !cmd?.dribble && !sim.gather && (sim.pumpFake?.[p.id] ?? 0) <= state.tick) {
+      trackDirectionalCut(p, dribble, { x: dx, z: dz }, state.tick, state.ball.position.y);
+    } else {
+      delete dribble.pendingCut;
+      delete dribble.cutHeading;
+    }
+  }
+
   let cutFactor = 1;
   sim.prevMoveDir ??= {};
   if (norm > 0.25) {
@@ -188,7 +199,7 @@ export function stepPlayerMovement(p: GamePlayer, cmd: Control | undefined, ctx:
     : 1;
   const accel = physique.acceleration * stunAccel * (p.stamina < 30 ? 0.86 : 1) * lateralSlideBoost;
   const curSpeed = Math.hypot(p.velocity.x, p.velocity.z);
-  const activeDribbleMove = !!(dribble?.move && state.tick - dribble.move.started < dribble.move.duration);
+  const activeDribbleMove = !!(dribble?.move && !dribble.move.cutBounce && state.tick - dribble.move.started < dribble.move.duration);
 
   if (norm < 0.08) {
     // Crisp athletic two-foot braking when user releases stick/keys (slowed during lunge recovery).

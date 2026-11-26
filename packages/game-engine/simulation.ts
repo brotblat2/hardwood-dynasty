@@ -191,7 +191,7 @@ export function createSimulationEngine(
       .sort((a, b) => distance(a.position, p.position) - distance(b.position, p.position))[0];
 
     // Animation cancel: sprint launch out of a dribble move once past its launch window.
-    if (dribble.move && control?.sprint && canLaunchOutOfMove(dribble, state.tick)) {
+    if (dribble.move && !dribble.move.cutBounce && control?.sprint && canLaunchOutOfMove(dribble, state.tick)) {
       const moveSpeed = Math.hypot(control.move?.x ?? 0, control.move?.z ?? 0);
       if (moveSpeed > 0.45) {
         commitMoveHand(dribble, state.tick);

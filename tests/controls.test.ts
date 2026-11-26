@@ -365,3 +365,23 @@ test('controls map intenseD, capture directional dribbleDir, and derive euro ste
   assert.equal(input.read(bindings).toggleScreenMode, true);
   assert.equal(input.read(bindings).toggleScreenMode, false);
 });
+
+test('directed passes preserve the receiver or swipe direction across sample boundaries', () => {
+  const input = createInputState();
+  input.touch.move({ x: 1, z: 0 });
+  input.touch.pass({ x: 0, z: -1 });
+  input.touch.pass(undefined, 'wing');
+  const swipe = input.read(bindings);
+  assert.deepEqual(swipe.passAim, { x: 0, z: -1 });
+  assert.deepEqual(swipe.move, { x: 1, z: 0 });
+  assert.equal(input.read(bindings).targetId, 'wing');
+  assert.equal(input.read(bindings).pass, false);
+  input.keyDown('KeyE', bindings);
+  const pass = input.read(bindings);
+  assert.equal(pass.pass, true);
+  assert.equal(pass.screen, false);
+  input.keyDown('Space', bindings);
+  input.keyUp('Space');
+  assert.equal(input.read(bindings).shoot, true);
+  assert.equal(input.read(bindings).keyboardShotReleased, true);
+});

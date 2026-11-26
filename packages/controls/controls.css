@@ -24,31 +24,47 @@
 }
 
 .hd-touch-controls__movement {
-  display: grid;
-  justify-items: center;
-  gap: 6px;
+  flex: 0 0 auto;
 }
 
 .hd-touch-controls__stick,
 .hd-touch-controls__action {
-  box-sizing: border-box;
-  border: 1px solid rgb(255 255 255 / 58%);
-  color: #fff;
-  background: rgb(20 18 17 / 82%);
   pointer-events: auto;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
 }
 
+.hd-touch-controls__ring,
+.hd-touch-controls__action {
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 58%);
+  color: #fff;
+  background: rgb(20 18 17 / 82%);
+}
+
 .hd-touch-controls__stick {
   position: relative;
-  width: clamp(84px, 24vw, 124px);
+  width: clamp(98px, 35vw, 180px);
+  height: clamp(110px, 32vw, 152px);
+}
+
+.hd-touch-controls__ring {
+  position: absolute;
+  left: 42%;
+  top: 61%;
+  width: clamp(76px, 22vw, 112px);
   aspect-ratio: 1;
   border-radius: 50%;
   box-shadow: inset 0 0 0 7px rgb(255 255 255 / 12%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
-.hd-touch-controls__stick[data-sprinting='true'] {
+.hd-touch-controls__stick[data-active='true'] .hd-touch-controls__ring {
+  background: rgb(20 18 17 / 65%);
+}
+
+.hd-touch-controls__stick[data-sprinting='true'] .hd-touch-controls__ring {
   border-color: #f5c46a;
   box-shadow: inset 0 0 0 7px rgb(245 196 106 / 42%);
 }
@@ -130,15 +146,37 @@
 }
 
 .hd-touch-controls__actions .hd-touch-controls__action--pass {
+  position: relative;
   min-width: 74px;
-  background: #242a32f5;
+  background: #242a32;
 }
 
-.hd-touch-controls__action--shoot small {
+.hd-touch-controls__actions .hd-touch-controls__action small {
   display: block;
   margin-top: 2px;
   font-size: 10px;
   font-weight: 650;
+}
+
+.hd-touch-controls__aim {
+  position: absolute;
+  top: -22px;
+  left: calc(50% - 15px);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #16120d;
+  border-radius: 50%;
+  color: #16120d;
+  background: #f5c46a;
+  font-size: 21px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.hd-touch-controls__actions .hd-touch-controls__action--pass[data-aiming='true'] {
+  border-color: #f5c46a;
 }
 
 .hd-touch-controls__action--dribble {
@@ -192,14 +230,15 @@
   background: rgb(147 245 178 / 90%);
 }
 
-.hd-touch-controls__action:focus-visible {
+.hd-touch-controls__action:focus-visible,
+.hd-touch-controls__more:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;
 }
 
 @media (max-width: 440px) {
   .hd-touch-controls__stick {
-    width: clamp(76px, 22vw, 94px);
+    width: clamp(86px, 32vw, 135px);
   }
 
   .hd-touch-controls__actions {
@@ -214,15 +253,25 @@
   .hd-touch-controls__actions .hd-touch-controls__action--shoot {
     min-width: 78px;
   }
+
+  .hd-touch-controls__actions .hd-touch-controls__action--pass {
+    min-width: 70px;
+  }
 }
 
-@media (max-height: 460px) and (pointer: coarse) {
+@media (max-height: 460px) and (orientation: landscape) {
   .hd-touch-controls {
     bottom: max(8px, env(safe-area-inset-bottom));
   }
 
   .hd-touch-controls__stick {
+    width: clamp(106px, 28vw, 156px);
+    height: clamp(80px, 29dvh, 108px);
+  }
+
+  .hd-touch-controls__ring {
     width: clamp(70px, 20vh, 92px);
+    top: 56%;
   }
 
   .hd-touch-controls__extras {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent, ReactNode } from 'react';
 import { zeroControl } from '../contracts/index.ts';
-import type { ShotMeterState } from '../contracts/index.ts';
+import type { ShotMeterState, Vec2 } from '../contracts/index.ts';
 import {
   DEFAULT_KEYBOARD_BINDINGS, createInputState, limitMove, mergeBindings,
 } from './input.ts';
@@ -86,8 +86,9 @@ const TOUCH_BUTTONS = [
 ] as const;
 const SPRINT_BUTTON = { action: 'sprint', label: 'Sprint', accessibleLabel: 'Sprint' } as const;
 const JOYSTICK_TRAVEL = 0.28;
-const SPRINT_ENTRY = 0.38;
-const SPRINT_EXIT = 0.32;
+const SPRINT_ENTRY = 1.18;
+const SPRINT_EXIT = 1.02;
+const PASS_SWIPE_THRESHOLD = 16;
 const VIRTUAL_POINTER = -1;
 const STILL = { x: 0, z: 0 };
 
@@ -114,24 +115,41 @@ type TouchControlsProps = {
   playerLocked?: boolean; tactics?: ReactNode;
 };
 
+type Point = { x: number; y: number };
+type StickGesture = { pointer: number; origin: Point; travel: number };
+
+function getSwipeDirection(origin: Point, end: Point): Vec2 | undefined {
+  const dx = end.x - origin.x;
+  const dz = end.y - origin.y;
+  const distance = Math.hypot(dx, dz);
+  return distance >= PASS_SWIPE_THRESHOLD ? { x: dx / distance, z: dz / distance } : undefined;
+}
+
 export function TouchControls({ touch, visible, context, charge = 0, shotMeter, iconPassActive, playerLocked, tactics }: TouchControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [stick, setStick] = useState(STILL);
+  const [stickOrigin, setStickOrigin] = useState<Point | null>(null);
   const [sprinting, setSprinting] = useState(false);
   const [pressedActions, setPressedActions] = useState<TouchAction[]>([]);
-  const stickPointer = useRef<number | null>(null);
+  const [passDirection, setPassDirection] = useState<Vec2>();
+  const stickGesture = useRef<StickGesture | null>(null);
+  const stickRing = useRef<HTMLSpanElement>(null);
   const stickSprint = useRef(false);
   const buttonPointers = useRef(new Map<number, TouchAction>());
+  const passGesture = useRef<{ pointer: number; origin: Point | null } | null>(null);
   const dribbleSwipes = useRef(new Map<number, { x: number; y: number; swiped: boolean }>());
   useEffect(() => {
     const clear = () => {
-      stickPointer.current = null;
+      stickGesture.current = null;
       stickSprint.current = false;
+      passGesture.current = null;
       buttonPointers.current.clear();
       dribbleSwipes.current.clear();
       setStick(STILL);
+      setStickOrigin(null);
       setSprinting(false);
       setPressedActions([]);
+      setPassDirection(undefined);
       touch.clear();
     };
     if (visible === false) {
@@ -148,13 +166,10 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
   }, [touch, visible]);
 
   const moveStick = (event: PointerEvent<HTMLDivElement>) => {
-    if (stickPointer.current !== event.pointerId) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const size = Math.max(1, rect.width);
-    const x = (event.clientX - rect.left - rect.width / 2) / size;
-    const z = (event.clientY - rect.top - rect.height / 2) / size;
-    const rawX = x / JOYSTICK_TRAVEL;
-    const rawZ = z / JOYSTICK_TRAVEL;
+    const gesture = stickGesture.current;
+    if (!gesture || gesture.pointer !== event.pointerId) return;
+    const rawX = (event.clientX - gesture.origin.x) / gesture.travel;
+    const rawZ = (event.clientY - gesture.origin.y) / gesture.travel;
     const dist = Math.hypot(rawX, rawZ);
     const visualThumb = limitMove(rawX, rawZ);
     let next = STILL;
@@ -165,7 +180,7 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
     }
     setStick(visualThumb);
     touch.move(next);
-    const sprint = Math.hypot(x, z) >= (stickSprint.current ? SPRINT_EXIT : SPRINT_ENTRY);
+    const sprint = dist >= (stickSprint.current ? SPRINT_EXIT : SPRINT_ENTRY);
     if (sprint === stickSprint.current) return;
     stickSprint.current = sprint;
     setSprinting(sprint);
@@ -174,20 +189,28 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
   };
 
   const releaseStick = (event: PointerEvent<HTMLDivElement>, cancel = false) => {
-    if (stickPointer.current !== event.pointerId) return;
-    stickPointer.current = null;
+    if (stickGesture.current?.pointer !== event.pointerId) return;
+    stickGesture.current = null;
     stickSprint.current = false;
     setStick(STILL);
+    setStickOrigin(null);
     setSprinting(false);
     touch.move(STILL);
     if (cancel) touch.cancel(event.pointerId);
     else touch.release(event.pointerId);
   };
 
-  const releaseButton = (pointerId: number, cancel = false) => {
+  const releaseButton = (pointerId: number, cancel = false, end?: Point) => {
     const action = buttonPointers.current.get(pointerId);
     if (!buttonPointers.current.delete(pointerId)) return;
     setPressedActions([...buttonPointers.current.values()]);
+    if (action === 'pass' && passGesture.current?.pointer === pointerId) {
+      const { origin } = passGesture.current;
+      passGesture.current = null;
+      setPassDirection(undefined);
+      if (!cancel) touch.pass(origin && end ? getSwipeDirection(origin, end) : undefined);
+      return;
+    }
     if (action === 'dribble') {
       const swipe = dribbleSwipes.current.get(pointerId);
       dribbleSwipes.current.delete(pointerId);
@@ -210,6 +233,8 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
       : context === 'loose' && action === 'intenseD' ? 'Box Out'
       : label;
     const isShoot = action === 'shoot';
+    const isPass = action === 'pass';
+    const isSwipePass = isPass && context === 'offense';
     const progress = shotMeter?.progress ?? charge;
     const maxC = shotMeter?.maxCharge ?? 1.2;
     const ideal = shotMeter?.ideal ?? 0.62;
@@ -222,24 +247,32 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
         key={action}
         className={`hd-touch-controls__action hd-touch-controls__action--${action}`}
         aria-label={displayLabel === label ? accessibleLabel : displayLabel}
-        aria-description={isShoot ? 'Tap to shoot, or hold and release to time your shot.' : undefined}
+        aria-description={isShoot ? 'Tap to shoot, or hold and release to time your shot.'
+          : isSwipePass ? 'Tap to pass. Swipe toward a teammate and release to pass in that direction.' : undefined}
         hidden={(!visibleActions.includes(action) && !pressed) || (playerLocked && action === 'switchPlayer')}
         data-pressed={pressed}
         data-green={inGreen || undefined}
+        data-aiming={isSwipePass && passDirection ? true : undefined}
         style={chargePct ? ({ '--charge': `${chargePct}%` } as CSSProperties) : undefined}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
+          if (isPass && passGesture.current) return;
           event.preventDefault();
           event.currentTarget.setPointerCapture(event.pointerId);
           buttonPointers.current.set(event.pointerId, action);
           setPressedActions([...buttonPointers.current.values()]);
-          if (action === 'dribble') {
+          if (isPass) {
+            passGesture.current = { pointer: event.pointerId, origin: isSwipePass ? { x: event.clientX, y: event.clientY } : null };
+          } else if (action === 'dribble') {
             dribbleSwipes.current.set(event.pointerId, { x: event.clientX, y: event.clientY, swiped: false });
           } else {
             touch.press(event.pointerId, action);
           }
         }}
         onPointerMove={(event) => {
+          if (isPass && passGesture.current?.pointer === event.pointerId && passGesture.current.origin) {
+            setPassDirection(getSwipeDirection(passGesture.current.origin, { x: event.clientX, y: event.clientY }));
+          }
           if (action !== 'dribble') return;
           const swipe = dribbleSwipes.current.get(event.pointerId);
           if (!swipe || swipe.swiped) return;
@@ -250,17 +283,23 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
             touch.dribbleFlick(limitMove(dx / 32, dy / 32));
           }
         }}
-        onPointerUp={(event) => releaseButton(event.pointerId)}
+        onPointerUp={(event) => releaseButton(event.pointerId, false, { x: event.clientX, y: event.clientY })}
         onPointerCancel={(event) => releaseButton(event.pointerId, true)}
         onLostPointerCapture={(event) => releaseButton(event.pointerId, true)}
         onClick={(event) => {
           if (event.detail !== 0) return;
-          touch.press(VIRTUAL_POINTER, action);
-          touch.release(VIRTUAL_POINTER);
+          if (isPass) touch.pass();
+          else {
+            touch.press(VIRTUAL_POINTER, action);
+            touch.release(VIRTUAL_POINTER);
+          }
         }}
       >
         {displayLabel}
         {isShoot && <small aria-hidden="true">Tap or hold</small>}
+        {isSwipePass && <small aria-hidden="true">Tap or swipe</small>}
+        {isSwipePass && passDirection && <span aria-hidden="true" className="hd-touch-controls__aim"
+          style={{ rotate: `${Math.atan2(passDirection.z, passDirection.x)}rad` }}>➜</span>}
       </button>
     );
   };
@@ -281,24 +320,30 @@ export function TouchControls({ touch, visible, context, charge = 0, shotMeter, 
           className="hd-touch-controls__stick"
           role="img"
           aria-label="Movement joystick"
-          aria-description="Push the joystick to its outer ring to sprint."
+          aria-description="Place your thumb anywhere in this area and drag to move. Push past the ring to sprint."
+          data-active={stickOrigin !== null}
           data-sprinting={sprinting}
           onPointerDown={(event) => {
-            if (event.button !== 0 || stickPointer.current !== null) return;
+            if (event.button !== 0 || stickGesture.current) return;
             event.preventDefault();
-            stickPointer.current = event.pointerId;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const origin = { x: event.clientX, y: event.clientY };
+            const localOrigin = { x: origin.x - rect.left, y: origin.y - rect.top };
+            const travel = Math.max(20, (stickRing.current?.offsetWidth ?? 92) * JOYSTICK_TRAVEL);
+            stickGesture.current = { pointer: event.pointerId, origin, travel };
             event.currentTarget.setPointerCapture(event.pointerId);
-            moveStick(event);
+            setStickOrigin(localOrigin);
           }}
           onPointerMove={moveStick}
           onPointerUp={(event) => releaseStick(event)}
           onPointerCancel={(event) => releaseStick(event, true)}
           onLostPointerCapture={(event) => releaseStick(event, true)}
         >
-          <span
-            className="hd-touch-controls__thumb"
-            style={{ left: `${50 + stick.x * JOYSTICK_TRAVEL * 100}%`, top: `${50 + stick.z * JOYSTICK_TRAVEL * 100}%` }}
-          />
+          <span ref={stickRing} className="hd-touch-controls__ring"
+            style={stickOrigin ? { left: stickOrigin.x, top: stickOrigin.y } : undefined}>
+            <span className="hd-touch-controls__thumb"
+              style={{ left: `${50 + stick.x * JOYSTICK_TRAVEL * 100}%`, top: `${50 + stick.z * JOYSTICK_TRAVEL * 100}%` }} />
+          </span>
         </div>
       </div>
       <div className="hd-touch-controls__action-area">

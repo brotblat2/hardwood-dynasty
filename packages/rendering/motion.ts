@@ -188,9 +188,11 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
       const sign = i === 0 ? -1 : 1;
       const step = stride + i * Math.PI;
       const swing = Math.sin(step) * run * 0.46;
-      const lift = Math.max(0, Math.cos(step)) ** 1.5 * run * 0.26;
+      // Load the outside foot as the ball drops, then push into the new lane.
+      const plant = dm === 'crossover' && sign === -mDir ? moveArc : 0;
+      const lift = Math.max(0, Math.cos(step)) ** 1.5 * run * 0.26 * (1 - plant);
       const spacing = thickness * 0.143 + screen * 0.16 + slide * 0.14 + intenseD * 0.16 + boxOut * 0.20 +
-        bodyUp * 0.12 + postUp * 0.17 + deadDribble * 0.08 + stumble * 0.18 + (dm === 'betweenLegs' ? moveArc * 0.15 : 0);
+        plant * 0.12 + bodyUp * 0.12 + postUp * 0.17 + deadDribble * 0.08 + stumble * 0.18 + (dm === 'betweenLegs' ? moveArc * 0.15 : 0);
       const scissor = dm === 'betweenLegs' ? (sign === mDir ? 1 : -1) * moveArc * 0.36
         : dm === 'jab' && sign === mDir ? moveArc * 0.34
         : 0;
@@ -243,7 +245,16 @@ export function makeMotion(stature: number, thickness: number, hash: number, arm
         const front = (Math.cos(pose.facing) * dx + Math.sin(pose.facing) * dz) / scale;
         const reach = clamp((held.y - pose.rise) / scale + 0.15, 0.87, 1.49);
         const reachZ = dm === 'behindBack' ? -0.26 * moveArc : clamp(front, -0.31, 0.58);
-        if (sign * side > 0 || (Math.abs(side) < 0.025 && sign === 1)) {
+        if (dm === 'crossover') {
+          // The pushing wrist follows through while the other hand opens for the bounce.
+          const receive = sign === mDir;
+          const contact = receive ? MathUtils.smoothstep(mp, 0.43, 0.88) : 1 - MathUtils.smoothstep(mp, 0.16, 0.61);
+          const readyX = sign * (receive ? 0.4 : 0.26);
+          const wristX = lerp(readyX, clamp(side, -0.54, 0.54), contact);
+          const wristY = lerp(1.15 - crouch, reach, contact);
+          blend(arm.joint, sign * 0.31, 1.31 - crouch, front * 0.45, dribble);
+          blend(arm.end, wristX, wristY, lerp(0.25, reachZ, contact), dribble);
+        } else if (sign * side > 0 || (Math.abs(side) < 0.025 && sign === 1)) {
           blend(arm.joint, sign * 0.286, 1.32 - crouch, dm === 'behindBack' ? -0.14 * moveArc : Math.max(0.035, front * 0.61), dribble);
           blend(arm.end, clamp(side, -0.54, 0.54), reach, reachZ, dribble);
         } else {

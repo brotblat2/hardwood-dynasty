@@ -5,6 +5,7 @@ import { selectPassTarget } from '../game-engine/index.ts';
 export type PlayerControl = Control & {
   switchPlayer?: boolean;
   touchShotReleased?: boolean;
+  keyboardShotReleased?: boolean;
   passAim?: Vec2;
   iconPassToggle?: boolean;
   iconSlot?: 0 | 1 | 2 | 3;
@@ -22,14 +23,14 @@ export const DEFAULT_KEYBOARD_BINDINGS = {
   right: ['KeyD', 'ArrowRight'],
   sprint: ['ShiftLeft', 'ShiftRight'],
   shoot: ['Space'],
-  pass: ['KeyJ'],
+  pass: ['KeyE', 'KeyJ'],
   dribble: ['KeyK'],
   intenseD: ['KeyL'],
   handsUp: ['KeyH'],
   bouncePass: ['KeyU'],
   lobPass: ['KeyI'],
   flashyPass: ['KeyO'],
-  screen: ['KeyE'],
+  screen: ['KeyG'],
   toggleScreenMode: ['KeyF'],
   switchPlayer: ['KeyQ'],
   callPlay: ['KeyR'],
@@ -44,6 +45,7 @@ export type KeyboardBindings = Record<InputAction, readonly string[]>;
 export type TouchAction = Exclude<InputAction, 'up' | 'down' | 'left' | 'right' | 'callPlay' | 'toggleScreenMode'>;
 export type TouchInput = {
   move: (position: Vec2) => void;
+  pass: (direction?: Vec2, targetId?: string) => void;
   press: (pointer: number, action: TouchAction) => void;
   release: (pointer: number) => void;
   cancel: (pointer: number) => void;
@@ -68,7 +70,7 @@ const KEY_DISPLAY: Record<string, string> = {
   ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
 };
 
-function formatKeys(codes: readonly string[]) {
+export function formatKeys(codes: readonly string[]) {
   const names: string[] = [];
   for (const code of codes) {
     const label = KEY_DISPLAY[code] ?? code.replace(/^Key/, '').replace(/^Digit/, '');
@@ -82,9 +84,9 @@ export function formatKeyboardHints(bindings: Partial<KeyboardBindings> = DEFAUL
   return [
     ['Move', `${formatKeys(b.up)} ${formatKeys(b.left)} ${formatKeys(b.down)} ${formatKeys(b.right)}`],
     ['Sprint', formatKeys(b.sprint)],
-    ['Shoot / Block / Rebound', `Hold ${formatKeys(b.shoot)} (Tap = Fake · Def/Loose = Block/Rebound)`],
-    ['Pass / Switch (Def)', `${formatKeys(b.pass)} (Aim Move · Def/Loose = Switch)`],
-    ['Dribble / Steal (Def)', `${formatKeys(b.dribble)} or Right-Drag (Aim Move · Def = Steal)`],
+    ['Shoot / Block / Rebound', `Left click or ${formatKeys(b.shoot)} · hold to time a shot`],
+    ['Pass / Switch', `Right click a teammate or use ${formatKeys(b.pass)}`],
+    ['Dribble / Steal (Def)', `${formatKeys(b.dribble)} (cut across your body to cross over)`],
     ['Post-Up / Tight D / Box Out', `${formatKeys(b.intenseD)} (Off = Post-Up · Def = Tight D · Loose = Box Out)`],
     ['Hands-Up Contest (Def)', `${formatKeys(b.handsUp)} (Feet planted, no pump-fake bite)`],
     ['Call Screen / Box Out', formatKeys(b.screen)],
@@ -97,9 +99,9 @@ export function formatKeyboardHints(bindings: Partial<KeyboardBindings> = DEFAUL
 }
 
 export const KEYBOARD_HINTS = [
-  ['Move', 'WASD or Arrows'], ['Sprint', 'Shift'], ['Shoot / Block / Rebound', 'Space (Tap = Fake)'],
-  ['Pass / Switch (Def)', 'J (Aim Move)'], ['Dribble / Steal (Def)', 'K (Aim Move)'],
-  ['Post-Up / Tight D / Box Out', 'L'], ['Hands-Up Contest (Def)', 'H'], ['Call Screen / Box Out', 'E'],
+  ['Move', 'WASD or Arrows'], ['Sprint', 'Shift'], ['Shoot / Block / Rebound', 'Left click / Space'],
+  ['Pass / Switch (Def)', 'Right click / E / J'], ['Dribble / Steal (Def)', 'K (Aim Move)'],
+  ['Post-Up / Tight D / Box Out', 'L'], ['Hands-Up Contest (Def)', 'H'], ['Call Screen / Box Out', 'G'],
   ['Toggle Roll / Fade', 'F'], ['Bounce / Lob / Flashy', 'U / I / O'], ['Icon Pass', 'Tab, then 1–4'],
   ['Cycle Play / Defense', 'R'], ['Optional (Switch/Fake/Block/Steal)', 'Q / V / C / X'],
 ] as const;
@@ -244,9 +246,9 @@ const slotCodes = ['Digit1', 'Digit2', 'Digit3', 'Digit4'] as const;
 const padFaceSlots: readonly [InputAction, 0 | 1 | 2 | 3][] = [['shoot', 0], ['steal', 1], ['contest', 2], ['pass', 3]];
 type SlotIndex = 0 | 1 | 2 | 3;
 type TouchPress = { action: TouchAction };
-type BufferedPress = { action: BufferedAction; aim?: Vec2; touch?: TouchPress };
+type BufferedPress = { action: BufferedAction; aim?: Vec2; targetId?: string; touch?: TouchPress };
 const isPassAction = (action: BufferedAction): action is PassAction => passActions.some((pass) => pass === action);
-type ShootEdge = { down: boolean; touch?: TouchPress };
+type ShootEdge = { down: boolean; touch?: TouchPress; keyboard?: boolean };
 
 export function createInputState(initialBindings: Partial<KeyboardBindings> = DEFAULT_KEYBOARD_BINDINGS) {
   const keys = new Set<string>();
@@ -278,11 +280,11 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
     );
   };
   const aimForPass = (move: Vec2) => Math.hypot(pad.aim.x, pad.aim.z) >= PASS_AIM_MINIMUM ? pad.aim : move;
-  const changeShoot = (update: () => void, touch?: TouchPress) => {
+  const changeShoot = (update: () => void, touch?: TouchPress, keyboard = false) => {
     const previous = shootDown();
     update();
     const down = shootDown();
-    if (down !== previous) shootEdges.push({ down, touch });
+    if (down !== previous) shootEdges.push({ down, touch, keyboard });
   };
   const takePress = (actions: readonly BufferedAction[]) => {
     const index = presses.findIndex(({ action }) => actions.includes(action));
@@ -351,6 +353,9 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
   };
 
   const touch: TouchInput = {
+    pass(direction, targetId) {
+      presses.push({ action: 'pass', aim: direction ?? aimForPass(activeMove()), targetId, touch: { action: 'pass' } });
+    },
     move: (position) => { touchMove = limitMove(position.x, position.z); },
     press(pointer, action) {
       if (touchActions.has(pointer)) return;
@@ -404,7 +409,7 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
       const slotIdx = slotCodes.indexOf(code as (typeof slotCodes)[number]);
       if (slotIdx >= 0 && !next.length) slotPresses.push(slotIdx as SlotIndex);
     },
-    keyUp(code: string) { changeShoot(() => { keys.delete(code); }); },
+    keyUp(code: string) { changeShoot(() => { keys.delete(code); }, undefined, bindings.shoot.includes(code)); },
     clear() {
       keys.clear();
       presses.length = 0;
@@ -452,6 +457,8 @@ export function createInputState(initialBindings: Partial<KeyboardBindings> = DE
         ...(dribbleDir ? { dribbleDir } : {}),
         shoot: lastShoot,
         ...(!lastShoot && shotEdge?.touch ? { touchShotReleased: true } : {}),
+        ...(!lastShoot && shotEdge?.keyboard ? { keyboardShotReleased: true } : {}),
+        ...(pass?.targetId ? { targetId: pass.targetId } : {}),
         pass: !!pass,
         passType: pass && (pass.action === 'flashyPass' ? 'flashy' : pass.action === 'lobPass' ? 'lob' : pass.action === 'bouncePass' ? 'bounce' : 'chest'),
         passAim: pass && Math.hypot(passAim.x, passAim.z) >= PASS_AIM_MINIMUM ? passAim : undefined,

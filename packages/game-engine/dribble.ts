@@ -54,6 +54,52 @@ export function commitMoveHand(dribble: DribbleRuntime, tick: number): void {
   delete dribble.move;
 }
 
+/** A committed change of heading transfers the ball once; tiny stick corrections leave the hand alone. */
+export function trackDirectionalCut(p: GamePlayer, dribble: DribbleRuntime, input: Vec2, tick: number, ballHeight: number) {
+  const magnitude = Math.hypot(input.x, input.z);
+  if (magnitude < 0.48 || !Number.isFinite(magnitude)) {
+    delete dribble.pendingCut;
+    if (tick - (dribble.lastSteeringTick ?? -999) > 3) delete dribble.cutHeading;
+    return;
+  }
+  const dir = { x: input.x / magnitude, z: input.z / magnitude };
+  dribble.lastSteeringTick = tick;
+  if (tick - (dribble.lastAutomaticCut ?? -999) < 36 || tick - dribble.lastMoveTick < 26 || Math.hypot(p.velocity.x, p.velocity.z) < 1.75) {
+    dribble.cutHeading = dir;
+    delete dribble.pendingCut;
+    return;
+  }
+  const pending = dribble.pendingCut;
+  delete dribble.pendingCut;
+  if (pending && pending.x * dir.x + pending.z * dir.z > 0.87) {
+    // On a lateral drive the outside hand is the one on the new travel side.
+    const lateral = Math.sin(p.facing) * dir.x - Math.cos(p.facing) * dir.z;
+    const toHand = Math.abs(lateral) > 0.30 ? (lateral > 0 ? 1 : -1) : (dribble.hand === 1 ? -1 : 1);
+    if (toHand === dribble.hand) {
+      dribble.cutHeading = dir;
+      return;
+    }
+    const duration = Math.round(clamp(28 - p.profile.ratings.handling * 0.10, 18, 25));
+    dribble.move = {
+      type: 'crossover', fromHand: dribble.hand, toHand, dir: toHand, started: tick, duration,
+      cancelAfter: 0, launchAt: 1, peakSpeed: 0,
+      cutBounce: { height: clamp(ballHeight, BALL_RADIUS, 2.4), floorTick: Math.round(duration * 0.47) },
+    };
+    dribble.lastAutomaticCut = tick;
+    dribble.cutHeading = dir;
+  } else if (dribble.cutHeading && dribble.cutHeading.x * dir.x + dribble.cutHeading.z * dir.z < 0.45) {
+    dribble.pendingCut = dir;
+    return;
+  }
+  // Smooth the reference heading so a fast analog sweep registers across intermediate samples.
+  if (dribble.cutHeading) {
+    const x = dribble.cutHeading.x * 0.8 + dir.x * 0.2;
+    const z = dribble.cutHeading.z * 0.8 + dir.z * 0.2;
+    const length = Math.hypot(x, z);
+    dribble.cutHeading = { x: x / length, z: z / length };
+  } else dribble.cutHeading = dir;
+}
+
 export function selectDribbleMove(
   p: GamePlayer,
   dribble: DribbleRuntime,
@@ -344,6 +390,16 @@ export function computeDribbleBallPose(
       handOffset = active.fromHand * Math.cos(progress * Math.PI);
       const bounceCurve = Math.abs(progress - 0.48) / 0.48;
       yOverride = BALL_RADIUS + physique.height * 0.52 * clamp(bounceCurve * bounceCurve, 0, 1);
+      if (active.cutBounce) {
+        const age = tick - active.started;
+        const { height, floorTick } = active.cutBounce;
+        const down = clamp(age / floorTick, 0, 1);
+        const up = clamp((age - floorTick) / (active.duration - floorTick), 0, 1);
+        yOverride = BALL_RADIUS + (age <= floorTick
+          ? (height - BALL_RADIUS) * (1 - down * down)
+          : (physique.height * heightScale - BALL_RADIUS) * up * (2 - up));
+        if (progress === 1) dribble.phase = 0;
+      }
       forward = 0.30;
     } else if (active.type === 'betweenLegs') {
       handOffset = active.fromHand * Math.cos(progress * Math.PI);
@@ -409,7 +465,9 @@ export function computeDribbleBallPose(
   const position = localBallPoint(p, forward, lateral, y);
   return {
     position,
-    velocity: at(p.velocity.x, -8 * height * halfStroke * frequency, p.velocity.z),
+    velocity: active?.cutBounce && dribble.lastBallPos
+      ? at((position.x - dribble.lastBallPos.x) / dt, (position.y - dribble.lastBallPos.y) / dt, (position.z - dribble.lastBallPos.z) / dt)
+      : at(p.velocity.x, -8 * height * halfStroke * frequency, p.velocity.z),
     spin: at(p.velocity.z * 0.75, handOffset * 2.1, -p.velocity.x * 0.75),
     dribbleHand: handOffset < 0 ? -1 : 1,
     protectBall,

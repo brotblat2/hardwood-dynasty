@@ -51,6 +51,7 @@ export type ActiveMove = {
   cancelAfter: number;
   launchAt: number;
   peakSpeed: number;
+  cutBounce?: { height: number; floorTick: number };
 };
 
 export type DribbleRuntime = {
@@ -70,7 +71,10 @@ export type DribbleRuntime = {
   lastBallPos?: Vec3;
   bobbleTicks?: number;
   move?: ActiveMove;
-  crossover?: { traveled: number; floorAt: number };
+  cutHeading?: Vec2;
+  lastSteeringTick?: number;
+  pendingCut?: Vec2;
+  lastAutomaticCut?: number;
 };
 
 export type MoveSpec = {

@@ -6,9 +6,9 @@ Hardwood Dynasty is a browser basketball game with five-on-five, practice, confi
 
 Open the [game](https://hardwood-dynasty-chi.vercel.app/). Use **Play Now** to choose teams and period length. In **Rosters**, open a player's card to compare attributes and inspect their grade.
 
-- Move with WASD or the arrow keys. Hold Space and release near the marker to shoot.
-- J passes, K throws a bounce pass, and L lobs. C contests, X attempts a steal, Q switches players, E sets a screen, and F triggers a dribble move. Hold Shift to sprint.
-- On a phone, rotate to landscape for more court area and use the joystick and action buttons. A standard gamepad is also supported.
+- **Desktop** — Move with WASD or arrows and sprint with Shift. Left-click the court or press Space to shoot. Tap for an assisted release or hold to time it. Right-click a teammate to pass directly, or press E or J for a pass in your movement direction. On defense, left-click to block and right-click to switch.
+- **Phone** — Touch the lower-left movement area and drag from where your thumb lands. Push past the ring to sprint. Tap Shoot or hold and release. Tap Pass for a quick pass, swipe from Pass toward a teammate, or tap a teammate directly. More opens advanced moves.
+- **Dribbling** — While moving with the ball, cut sharply across your body to bounce it into the outside hand. Players keep dribbling on the same side through small corrections. A standard gamepad is also supported.
 - **Settings** changes controls, camera, and graphics. **Courtside** and **Player lock** offer closer views.
 
 Franchise, MyPlayer, downloaded rosters, settings, and suspended exhibition games are saved in the current browser. Export roster packs in **Rosters**. A franchise keeps its own roster as trades and seasons progress.

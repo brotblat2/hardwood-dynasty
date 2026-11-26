@@ -4,14 +4,14 @@ import { generateGameInjuries, getTeamForGame } from './injuries.ts';
 import type { Injury } from './injuries.ts';
 import type { GameBoxScore, PlayerSeasonStats, SeasonAward } from './statistics.ts';
 import { accumulateSeasonStats, getRotation, rotationMinutes, selectAwards, simulateBoxScore } from './statistics.ts';
-import { completeDraft, conductFantasyDraft, generateDraftOrder, generateFreeAgents, generateProspects, prepareDraft, progressRosters } from './roster.ts';
+import { completeDraft, conductFantasyDraft, generateDraftOrder, generateFreeAgents, generateProspects, prepareDraft, progressRosters, startFantasyDraft } from './roster.ts';
 
 export { generateSchedule } from './schedule.ts';
 export { getInjuryReport, getTeamForGame } from './injuries.ts';
 export type { Injury } from './injuries.ts';
 export { createPlayedBoxScore, getRotation, getSeasonLeaders, setTeamRotation } from './statistics.ts';
 export type { GameBoxScore, PlayerGameBox, PlayerSeasonStats, SeasonAward, SeasonStatCategory } from './statistics.ts';
-export { addExpansionTeam, conductFantasyDraft, draftProspect, extendContract, findTradeTargets, getCapSheet, scoutProspect, searchPlayers, signFreeAgent, tradePlayers, waivePlayer } from './roster.ts';
+export { addExpansionTeam, conductFantasyDraft, draftFantasyPlayer, draftProspect, extendContract, findTradeTargets, getCapSheet, scoutProspect, searchPlayers, signFreeAgent, tradePlayers, waivePlayer } from './roster.ts';
 
 export type ScheduledGame = {
   id: string;
@@ -51,6 +51,7 @@ export type ScoutingReport = {
 export type Prospect = Player & { scouted: boolean; projectedOverall: number; origin?: string; route?: 'international' | 'college'; report?: ScoutingReport };
 export type LotteryPick = { teamId: string; pick: number; firstPickChance: number };
 export type DraftPick = { round: number; teamId: string; prospectId?: string };
+export type FantasyDraft = { available: Player[]; pickOrder: string[]; picks: { teamId: string; playerId: string; round: number }[]; nextPick: number };
 export type FranchiseOptions = {
   userTeamId?: string;
   seed?: number;
@@ -94,6 +95,7 @@ export type FranchiseState = {
   seasonStats?: Record<string, PlayerSeasonStats>;
   injuries?: Record<string, Injury>;
   injuriesEnabled?: boolean;
+  fantasyDraft?: FantasyDraft;
 };
 
 function emptyStandings(teams: readonly Team[]): Standing[] {
@@ -126,7 +128,7 @@ export function createFranchise(teams: readonly Team[], options: FranchiseOption
     playoffGroups: { East: [], West: [] }, playInEnabled: options.playIn ?? true, injuriesEnabled: options.injuries ?? true, history: [], prospects: generateProspects(year + 1, teams.length, seed),
     draftPicks: [], freeAgents: generateFreeAgents(year, teams.length, seed), news: [`The ${year} season begins.`], salaryCap, financialRules,
   };
-  return options.fantasyDraft ? conductFantasyDraft(state) : state;
+  return options.fantasyDraft ? startFantasyDraft(state) : state;
 }
 
 export function getStandings(state: FranchiseState, conference?: Team['conference']): Standing[] {

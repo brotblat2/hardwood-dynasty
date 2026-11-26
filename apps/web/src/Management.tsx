@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import type { Difficulty, GameState, Position, Ratings, Team } from '../../../packages/contracts/index.ts';
 import { summarizeGame } from '../../../packages/analytics/index.ts';
 import { createFictionalTeam } from '../../../packages/roster-data/index.ts';
-import { advanceOffseason, addExpansionTeam, createFranchise, draftProspect, getCapSheet,
+import { advanceOffseason, addExpansionTeam, createFranchise, draftFantasyPlayer, draftProspect, getCapSheet,
   getNextUserGame, getStandings, getTeamForGame, getInjuryReport, getSeasonLeaders,
   createPlayedBoxScore, extendContract, findTradeTargets, getRotation, setTeamRotation, recordGameResult, scoutProspect, signFreeAgent,
   simulateDays, simulateNextDay, simulateToEnd, tradePlayers } from '../../../packages/franchise/index.ts';
@@ -68,6 +68,12 @@ export function FranchiseHub({ teams, difficulty, start }: HubProps) {
       <button className="button primary">Start franchise</button>
       {notice && <p role="status">{notice}</p>}
     </form>
+  </>;
+
+  if (state.fantasyDraft) return <>
+    <PageHeading title="Fantasy draft" subtitle="Your franchise starts when your roster is built. CPU teams draft automatically between your picks." />
+    <FantasyDraftRoom state={state} run={run} />
+    {notice && <p className="status-line" role="status">{notice}</p>}
   </>;
 
   const team = state.teams.find(value => value.id === state.userTeamId)!;
@@ -155,6 +161,39 @@ export function FranchiseHub({ teams, difficulty, start }: HubProps) {
       </tbody></table></div> : <p className="panel-copy">Play through a season to crown your first champion.</p>}
     </section>}
   </>;
+}
+
+function FantasyDraftRoom({ state, run }: { state: FranchiseState; run(action: () => FranchiseState): void }) {
+  const [query, setQuery] = useState('');
+  const [positionFilter, setPositionFilter] = useState('');
+  const draft = state.fantasyDraft!;
+  const teamId = draft.pickOrder[draft.nextPick];
+  const team = state.teams.find(value => value.id === teamId);
+  const onClock = teamId === state.userTeamId;
+  const round = draft.picks.filter(pick => pick.teamId === teamId).length + 1;
+  const visiblePlayers = draft.available.filter(player => player.name.toLocaleLowerCase().includes(query.toLocaleLowerCase().trim()) && (!positionFilter || player.position === positionFilter));
+  return <div className="columns">
+    <section className="panel">
+      <div className="panel-head"><div><h2>{onClock ? 'You’re on the clock' : `${team?.city} ${team?.name} is picking`}</h2><p>Round {round} · Pick {draft.nextPick + 1} of {draft.pickOrder.length}</p></div><span className="status-chip">{draft.available.length} available</span></div>
+      <p className="panel-copy">Choose a player to add to your roster. CPU teams make their picks automatically after yours.</p>
+      <div className="filters"><Field label="Search players"><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Name" /></Field><Field label="Position"><select value={positionFilter} onChange={event => setPositionFilter(event.target.value)}><option value="">All positions</option>{(['PG', 'SG', 'SF', 'PF', 'C'] as const).map(position => <option key={position}>{position}</option>)}</select></Field></div>
+      <div className="scroll-table"><table><thead><tr><th>Player</th><th>POS</th><th>Age</th><th>OVR</th><th>Potential</th><th>Height</th><th>Action</th></tr></thead><tbody>
+        {visiblePlayers.map(player => <tr key={player.id}>
+          <td>{player.name}</td><td>{player.position}</td><td>{player.age}</td><td>{player.overall}</td><td>{player.potential}</td><td>{(player.height * 100).toFixed(0)} cm</td>
+          <td><button className="button small primary" disabled={!onClock} onClick={() => run(() => draftFantasyPlayer(state, player.id))}>Draft</button></td>
+        </tr>)}
+      </tbody></table></div>
+    </section>
+    <section className="panel"><div className="panel-head"><div><h2>Your roster</h2><p>{state.teams.find(value => value.id === state.userTeamId)?.roster.length ?? 0} players selected</p></div></div>
+      <PlayerTable players={state.teams.find(value => value.id === state.userTeamId)?.roster ?? []} />
+      <h3>Recent picks</h3>
+      <ol className="news-list">{draft.picks.slice(-12).reverse().map((pick, index) => {
+        const picked = state.teams.flatMap(value => value.roster).find(player => player.id === pick.playerId);
+        const owner = state.teams.find(value => value.id === pick.teamId);
+        return <li key={`${pick.playerId}-${index}`}>Round {pick.round}: {owner?.abbreviation} selected {picked?.name ?? 'player'}.</li>;
+      })}</ol>
+    </section>
+  </div>;
 }
 
 function Metric({ title, value }: { title: string; value: string | number }) {

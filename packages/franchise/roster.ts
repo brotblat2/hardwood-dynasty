@@ -1,5 +1,5 @@
 import type { Player, Position, Ratings, Team } from '../contracts/index.ts';
-import type { DraftPick, FranchiseState, LotteryPick, Prospect, Standing } from './index.ts';
+import type { DraftPick, FantasyDraft, FranchiseState, LotteryPick, Prospect, Standing } from './index.ts';
 import { hash, seededRandom, shuffle } from './schedule.ts';
 
 const minimumSalary = 1_250_000;
@@ -293,26 +293,68 @@ export function findTradeTargets(state: FranchiseState, teamId: string, offering
 }
 
 export function conductFantasyDraft(state: FranchiseState): FranchiseState {
-  if (state.phase !== 'regular' || state.schedule.some(({ homeScore }) => homeScore !== undefined)) {
-    throw new Error('Start a fantasy draft before the first game of a season.');
-  }
+  let next = startFantasyDraft(state);
+  while (next.fantasyDraft) next = makeFantasyPick(next, next.fantasyDraft.available[0]?.id);
+  return next;
+}
+
+export function startFantasyDraft(state: FranchiseState): FranchiseState {
+  if (state.phase !== 'regular' || state.schedule.some(({ homeScore }) => homeScore !== undefined)) throw new Error('Start a fantasy draft before the first game of a season.');
+  if (state.fantasyDraft) return state;
   const random = seededRandom(state.seed ^ state.year ^ 0xf747);
   const order = shuffle(state.teams.map(({ id }) => id), random);
-  const pools = [...state.teams.flatMap(({ roster }) => roster)].sort((a, b) => b.overall - a.overall || b.potential - a.potential);
-  const rosters = new Map(state.teams.map(({ id }) => [id, [] as Player[]]));
+  const available = state.teams.flatMap(({ roster }) => roster).sort((a, b) => b.overall - a.overall || b.potential - a.potential);
   const sizes = new Map(state.teams.map(({ id, roster }) => [id, roster.length]));
-  for (let round = 0; pools.length; round++) {
+  const pickOrder: string[] = [];
+  for (let round = 0; pickOrder.length < available.length; round++) {
     const roundOrder = round % 2 ? [...order].reverse() : order;
-    for (const id of roundOrder) {
-      if (!pools.length) break;
-      const roster = rosters.get(id)!;
-      if (roster.length >= sizes.get(id)!) continue;
-      const desired = positions.find((position) => !roster.some((player) => player.position === position));
-      const bestFit = desired ? pools.findIndex(({ position }) => position === desired) : -1;
-      roster.push(pools.splice(bestFit < 0 ? 0 : bestFit, 1)[0]);
-    }
+    for (const id of roundOrder) if (pickOrder.filter(teamId => teamId === id).length < (sizes.get(id) ?? 0)) pickOrder.push(id);
   }
-  return withNews({ ...state, teams: state.teams.map((team) => ({ ...team, roster: rosters.get(team.id)! })) }, 'The league held a fantasy draft.');
+  const draft: FantasyDraft = { available, pickOrder, picks: [], nextPick: 0 };
+  const started = withNews({ ...state, fantasyDraft: draft, teams: state.teams.map(team => ({ ...team, roster: [] })) }, 'Fantasy draft underway. You are on the clock when your team is up.');
+  return advanceCpuPicks(started);
+}
+
+function makeFantasyPick(state: FranchiseState, playerId?: string): FranchiseState {
+  const draft = state.fantasyDraft;
+  if (!draft) return state;
+  let index = draft.nextPick;
+  if (index >= draft.pickOrder.length) return { ...state, fantasyDraft: undefined };
+  const teamId = draft.pickOrder[index];
+  const isUser = teamId === state.userTeamId;
+  const roster = state.teams.find(team => team.id === teamId)?.roster ?? [];
+  const preferred = positions.find(position => !roster.some(player => player.position === position));
+  const best = draft.available.find(player => player.id === playerId) ?? (preferred ? draft.available.find(player => player.position === preferred) : undefined) ?? draft.available[0];
+  if (!best) return { ...state, fantasyDraft: undefined };
+  if (isUser && !playerId) return state;
+  const round = picksRound(draft.picks, teamId);
+  const picks = [...draft.picks, { teamId, playerId: best.id, round }];
+  const available = draft.available.filter(player => player.id !== best.id);
+  const teams = state.teams.map(team => team.id === teamId ? { ...team, roster: [...team.roster, best] } : team);
+  const updated = { ...state, teams, fantasyDraft: { ...draft, available, picks, nextPick: index + 1 } };
+  if (updated.fantasyDraft.nextPick >= updated.fantasyDraft.pickOrder.length) {
+    const completed = withNews({ ...updated, fantasyDraft: undefined }, 'Fantasy draft complete. Your season is ready.');
+    return completed;
+  }
+  return updated;
+}
+
+function picksRound(picks: FantasyDraft['picks'], teamId: string) {
+  return picks.filter(pick => pick.teamId === teamId).length + 1;
+}
+
+function advanceCpuPicks(state: FranchiseState): FranchiseState {
+  let next = state;
+  while (next.fantasyDraft && next.fantasyDraft.pickOrder[next.fantasyDraft.nextPick] !== next.userTeamId) next = makeFantasyPick(next);
+  return next;
+}
+
+export function draftFantasyPlayer(state: FranchiseState, playerId: string): FranchiseState {
+  const draft = state.fantasyDraft;
+  if (!draft) throw new Error('There is no fantasy draft in progress.');
+  if (draft.pickOrder[draft.nextPick] !== state.userTeamId) throw new Error('Your team is not on the clock.');
+  if (!draft.available.some(player => player.id === playerId)) throw new Error('That player is no longer available.');
+  return advanceCpuPicks(makeFantasyPick(state, playerId));
 }
 
 export function addExpansionTeam(state: FranchiseState, team: Team): FranchiseState {
